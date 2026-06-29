@@ -524,11 +524,36 @@ class _LibraryGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _ZoomablePhotoMap(
-      photos: photos,
-      selected: selected,
-      onSelect: onSelect,
-      onOpen: onOpen,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final showTimeline =
+            constraints.maxWidth > constraints.maxHeight && photos.length > 1;
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: _ZoomablePhotoMap(
+                photos: photos,
+                selected: selected,
+                onSelect: onSelect,
+                onOpen: onOpen,
+              ),
+            ),
+            if (showTimeline)
+              Positioned(
+                left: 16,
+                right: 16,
+                bottom: 16,
+                height: 86,
+                child: _LandscapeMiniTimeline(
+                  photos: photos,
+                  selected: selected,
+                  onSelect: onSelect,
+                  onOpen: onOpen,
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }
@@ -575,9 +600,8 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
-        final columns = _columnsFor(widget.photos.length, size.aspectRatio);
-        final rows = (widget.photos.length / columns).ceil();
-        final contentSize = Size(columns * _tile, rows * _tile);
+        final columns =
+            _columnsFor(widget.photos.length, size.aspectRatio, _tile);
         final visible = _visibleIndexes(
           count: widget.photos.length,
           columns: columns,
@@ -590,7 +614,7 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
           onPointerSignal: (event) {
             if (event is PointerScrollEvent) {
               final factor = event.scrollDelta.dy > 0 ? 0.88 : 1.14;
-              _zoomAt(event.localPosition, factor, size, contentSize);
+              _zoomAt(event.localPosition, factor, size);
             }
           },
           child: GestureDetector(
@@ -620,26 +644,18 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
                   worldAtStart * nextTile +
                   details.localFocalPoint -
                   _startFocal;
+              final nextColumns =
+                  _columnsFor(widget.photos.length, size.aspectRatio, nextTile);
+              final nextRows = (widget.photos.length / nextColumns).ceil();
               setState(() {
                 _tile = nextTile;
                 _offset = _clampOffset(nextOffset, size,
-                    Size(columns * nextTile, rows * nextTile));
+                    Size(nextColumns * nextTile, nextRows * nextTile));
               });
             },
             child: ClipRect(
               child: Stack(
                 children: [
-                  Positioned.fill(
-                    child: CustomPaint(
-                      painter: _MapBackgroundPainter(
-                        offset: _offset,
-                        tile: _tile,
-                        columns: columns,
-                        rows: rows,
-                        color: Theme.of(context).colorScheme.outlineVariant,
-                      ),
-                    ),
-                  ),
                   for (final index in visible)
                     _MapTile(
                       key: ValueKey(widget.photos[index].path),
@@ -672,11 +688,13 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
     );
   }
 
-  void _zoomAt(Offset focal, double factor, Size viewport, Size contentSize) {
+  void _zoomAt(Offset focal, double factor, Size viewport) {
     final nextTile = (_tile * factor).clamp(_minTile, _maxTile);
     final world = (focal - _offset) / _tile;
-    final scale = nextTile / _tile;
-    final nextContent = contentSize * scale;
+    final nextColumns =
+        _columnsFor(widget.photos.length, viewport.aspectRatio, nextTile);
+    final nextRows = (widget.photos.length / nextColumns).ceil();
+    final nextContent = Size(nextColumns * nextTile, nextRows * nextTile);
     setState(() {
       _tile = nextTile;
       _offset = _clampOffset(focal - world * nextTile, viewport, nextContent);
@@ -723,10 +741,18 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
     return indexes;
   }
 
-  int _columnsFor(int count, double aspectRatio) {
+  int _columnsFor(int count, double aspectRatio, double tile) {
     if (count <= 0) return 1;
     final base = math.sqrt(count * math.max(0.65, aspectRatio));
-    return math.max(1, base.ceil());
+    final startColumns = math.max(1, base.ceil());
+    final zoomProgress =
+        ((tile - _initialTile) / (_maxTile - _initialTile)).clamp(0.0, 1.0);
+    final maxZoomColumns = aspectRatio < 1 ? 1 : count;
+    if (zoomProgress >= 0.98) return maxZoomColumns;
+    final stripProgress = math.pow(zoomProgress, 4).toDouble();
+    final columns =
+        startColumns + ((maxZoomColumns - startColumns) * stripProgress).round();
+    return columns.clamp(1, count);
   }
 
   Offset _clampOffset(Offset offset, Size viewport, Size content) {
@@ -756,42 +782,122 @@ class _MapTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final gap = tile < 28 ? 0.5 : 2.0;
+    final gap = tile < 28 ? 0.0 : 1.0;
     final showChrome = tile >= 72;
     return Positioned(
       left: offset.dx + rect.left + gap,
       top: offset.dy + rect.top + gap,
       width: math.max(1, rect.width - gap * 2),
       height: math.max(1, rect.height - gap * 2),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          border: Border.all(
-            color: selected
-                ? Theme.of(context).colorScheme.primary
-                : Colors.transparent,
-            width: selected ? 3 : 0,
-          ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(tile < 40 ? 0 : 8),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            _GpuFriendlyImage(path: photo.path),
+            if (selected && tile >= 42)
+              ColoredBox(color: Colors.white.withValues(alpha: 0.12)),
+            if (showChrome)
+              Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: _TileLabel(photo: photo)),
+            if (selected && tile >= 64)
+              const Positioned(
+                left: 6,
+                top: 6,
+                child: Icon(Icons.check_circle, color: Colors.white, size: 20),
+              ),
+            if (photo.favorite && tile >= 42)
+              const Positioned(
+                right: 5,
+                top: 5,
+                child: Icon(Icons.favorite, color: Colors.white, size: 18),
+              ),
+          ],
         ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(tile < 40 ? 1 : 8),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              _GpuFriendlyImage(path: photo.path),
-              if (showChrome)
-                Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    child: _TileLabel(photo: photo)),
-              if (photo.favorite && tile >= 42)
-                const Positioned(
-                  right: 5,
-                  top: 5,
-                  child: Icon(Icons.favorite, color: Colors.white, size: 18),
-                ),
-            ],
+      ),
+    );
+  }
+}
+
+class _LandscapeMiniTimeline extends StatelessWidget {
+  const _LandscapeMiniTimeline({
+    required this.photos,
+    required this.selected,
+    required this.onSelect,
+    required this.onOpen,
+  });
+
+  final List<PhotoAsset> photos;
+  final PhotoAsset? selected;
+  final ValueChanged<PhotoAsset> onSelect;
+  final ValueChanged<PhotoAsset> onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final selectedPath = selected?.path;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.86),
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.18),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
           ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(22),
+        child: ListView.builder(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          itemCount: photos.length,
+          itemBuilder: (context, index) {
+            final photo = photos[index];
+            final isSelected = photo.path == selectedPath;
+            return GestureDetector(
+              onTap: () => onSelect(photo),
+              onDoubleTap: () => onOpen(photo),
+              child: Transform.translate(
+                offset: Offset(0, isSelected ? -4 : 0),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 140),
+                  curve: Curves.easeOut,
+                  width: isSelected ? 62 : 54,
+                  margin: const EdgeInsets.symmetric(horizontal: 3),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        _GpuFriendlyImage(path: photo.path),
+                        if (!isSelected)
+                          ColoredBox(
+                            color: Colors.black.withValues(alpha: 0.18),
+                          ),
+                        if (isSelected)
+                          Align(
+                            alignment: Alignment.bottomCenter,
+                            child: Container(
+                              height: 4,
+                              margin: const EdgeInsets.fromLTRB(8, 0, 8, 5),
+                              decoration: BoxDecoration(
+                                color: Theme.of(context).colorScheme.primary,
+                                borderRadius: BorderRadius.circular(99),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
         ),
       ),
     );
@@ -831,7 +937,9 @@ class _ZoomHud extends StatelessWidget {
   }
 }
 
+// ignore: unused_element
 class _MapBackgroundPainter extends CustomPainter {
+  // ignore: unused_element
   const _MapBackgroundPainter({
     required this.offset,
     required this.tile,
