@@ -389,10 +389,10 @@ class _TopBar extends StatelessWidget {
               const Text('Photos',
                   style: TextStyle(fontSize: 34, fontWeight: FontWeight.w800)),
               const Spacer(),
-              Chip(
-                avatar: Icon(usingRust ? Icons.memory : Icons.code, size: 18),
-                label: Text(usingRust ? 'Rust core' : 'Dart fallback'),
-              ),
+              // Chip(
+              //   avatar: Icon(usingRust ? Icons.memory : Icons.code, size: 18),
+              //   label: Text(usingRust ? 'Rust core' : 'Dart fallback'),
+              // ),
             ],
           ),
           const SizedBox(height: 12),
