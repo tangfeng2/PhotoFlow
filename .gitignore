@@ -1,0 +1,13 @@
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+*.iml
+.idea/
+.vscode/
+rust/target/
+rust/Cargo.lock
+*.dll
+*.dylib
+*.so
