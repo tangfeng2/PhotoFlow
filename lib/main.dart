@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:ffi' hide Size;
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/gestures.dart';
@@ -624,36 +625,11 @@ class _LibraryGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final showTimeline =
-            constraints.maxWidth > constraints.maxHeight && photos.length > 1;
-        return Stack(
-          children: [
-            Positioned.fill(
-              child: _ZoomablePhotoMap(
-                photos: photos,
-                selected: selected,
-                onSelect: onSelect,
-                onOpen: onOpen,
-              ),
-            ),
-            if (showTimeline)
-              Positioned(
-                left: 16,
-                right: 16,
-                bottom: 16,
-                height: 86,
-                child: _LandscapeMiniTimeline(
-                  photos: photos,
-                  selected: selected,
-                  onSelect: onSelect,
-                  onOpen: onOpen,
-                ),
-              ),
-          ],
-        );
-      },
+    return _ZoomablePhotoMap(
+      photos: photos,
+      selected: selected,
+      onSelect: onSelect,
+      onOpen: onOpen,
     );
   }
 }
@@ -922,82 +898,221 @@ class _MapTile extends StatelessWidget {
   }
 }
 
-class _LandscapeMiniTimeline extends StatelessWidget {
-  const _LandscapeMiniTimeline({
+class _ViewerMiniTimeline extends StatefulWidget {
+  const _ViewerMiniTimeline({
     required this.photos,
-    required this.selected,
-    required this.onSelect,
-    required this.onOpen,
+    required this.activeIndex,
+    required this.onSelectIndex,
   });
 
   final List<PhotoAsset> photos;
-  final PhotoAsset? selected;
-  final ValueChanged<PhotoAsset> onSelect;
-  final ValueChanged<PhotoAsset> onOpen;
+  final int activeIndex;
+  final ValueChanged<int> onSelectIndex;
+
+  @override
+  State<_ViewerMiniTimeline> createState() => _ViewerMiniTimelineState();
+}
+
+class _ViewerMiniTimelineState extends State<_ViewerMiniTimeline> {
+  static const _itemExtent = 50.0;
+  static const _sideBlurWidth = 48.0;
+
+  final _controller = ScrollController();
+  double _viewportWidth = 0;
+  bool _programmaticScroll = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _centerOn(widget.activeIndex, animated: false);
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _ViewerMiniTimeline oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.activeIndex != widget.activeIndex ||
+        oldWidget.photos.length != widget.photos.length) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _centerOn(widget.activeIndex);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final selectedPath = selected?.path;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.86),
-        borderRadius: BorderRadius.circular(22),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.18),
-            blurRadius: 20,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(22),
-        child: ListView.builder(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          itemCount: photos.length,
-          itemBuilder: (context, index) {
-            final photo = photos[index];
-            final isSelected = photo.path == selectedPath;
-            return GestureDetector(
-              onTap: () => onSelect(photo),
-              onDoubleTap: () => onOpen(photo),
-              child: Transform.translate(
-                offset: Offset(0, isSelected ? -4 : 0),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 140),
-                  curve: Curves.easeOut,
-                  width: isSelected ? 62 : 54,
-                  margin: const EdgeInsets.symmetric(horizontal: 3),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        _GpuFriendlyImage(path: photo.path),
-                        if (!isSelected)
-                          ColoredBox(
-                            color: Colors.black.withValues(alpha: 0.18),
-                          ),
-                        if (isSelected)
-                          Align(
-                            alignment: Alignment.bottomCenter,
-                            child: Container(
-                              height: 4,
-                              margin: const EdgeInsets.fromLTRB(8, 0, 8, 5),
+    final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        _viewportWidth = constraints.maxWidth;
+        return Padding(
+          padding: EdgeInsets.fromLTRB(14, 0, 14, 10 + bottomInset),
+          child: SizedBox(
+            height: 64,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(18),
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.32),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.13),
+                        ),
+                      ),
+                    ),
+                  ),
+                  NotificationListener<ScrollEndNotification>(
+                    onNotification: (_) {
+                      if (!_programmaticScroll) _openCenteredPhoto();
+                      return false;
+                    },
+                    child: ListView.builder(
+                      controller: _controller,
+                      scrollDirection: Axis.horizontal,
+                      physics: const BouncingScrollPhysics(),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: math.max(
+                          0,
+                          (constraints.maxWidth - _itemExtent) / 2,
+                        ),
+                        vertical: 9,
+                      ),
+                      itemExtent: _itemExtent,
+                      itemCount: widget.photos.length,
+                      itemBuilder: (context, index) {
+                        final photo = widget.photos[index];
+                        final active = index == widget.activeIndex;
+                        return GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => widget.onSelectIndex(index),
+                          child: Center(
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 150),
+                              curve: Curves.easeOut,
+                              width: active ? 44 : 36,
+                              height: active ? 44 : 36,
                               decoration: BoxDecoration(
-                                color: Theme.of(context).colorScheme.primary,
-                                borderRadius: BorderRadius.circular(99),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: active
+                                      ? Colors.white
+                                      : Colors.white.withValues(alpha: 0.18),
+                                  width: active ? 2 : 1,
+                                ),
+                                boxShadow: active
+                                    ? [
+                                        BoxShadow(
+                                          color: Colors.black
+                                              .withValues(alpha: 0.34),
+                                          blurRadius: 12,
+                                        ),
+                                      ]
+                                    : null,
+                              ),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(6),
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    _GpuFriendlyImage(path: photo.path),
+                                    if (!active)
+                                      ColoredBox(
+                                        color:
+                                            Colors.black.withValues(alpha: 0.2),
+                                      ),
+                                  ],
+                                ),
                               ),
                             ),
                           ),
-                      ],
+                        );
+                      },
                     ),
                   ),
-                ),
+                  const Positioned(
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: _sideBlurWidth,
+                    child: _TimelineEdgeBlur(alignment: Alignment.centerLeft),
+                  ),
+                  const Positioned(
+                    right: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: _sideBlurWidth,
+                    child: _TimelineEdgeBlur(alignment: Alignment.centerRight),
+                  ),
+                ],
               ),
-            );
-          },
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _centerOn(int index, {bool animated = true}) {
+    if (!_controller.hasClients || _viewportWidth <= 0) return;
+    final maxScroll = _controller.position.maxScrollExtent;
+    final target =
+        (index * _itemExtent).clamp(0.0, math.max(0.0, maxScroll)).toDouble();
+
+    if (!animated) {
+      _controller.jumpTo(target);
+      return;
+    }
+
+    _programmaticScroll = true;
+    _controller
+        .animateTo(
+          target,
+          duration: const Duration(milliseconds: 210),
+          curve: Curves.easeOutCubic,
+        )
+        .whenComplete(() => _programmaticScroll = false);
+  }
+
+  void _openCenteredPhoto() {
+    if (!_controller.hasClients || widget.photos.isEmpty) return;
+    final rawIndex = (_controller.offset / _itemExtent).round();
+    final index = rawIndex.clamp(0, widget.photos.length - 1);
+    widget.onSelectIndex(index);
+    _centerOn(index);
+  }
+}
+
+class _TimelineEdgeBlur extends StatelessWidget {
+  const _TimelineEdgeBlur({required this.alignment});
+
+  final Alignment alignment;
+
+  @override
+  Widget build(BuildContext context) {
+    final isLeft = alignment == Alignment.centerLeft;
+    return ClipRect(
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(sigmaX: 6, sigmaY: 6),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: isLeft ? Alignment.centerLeft : Alignment.centerRight,
+              end: isLeft ? Alignment.centerRight : Alignment.centerLeft,
+              colors: [
+                Colors.black.withValues(alpha: 0.5),
+                Colors.black.withValues(alpha: 0),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -1443,24 +1558,57 @@ class _PhotoViewerState extends State<_PhotoViewer> {
           ),
         ],
       ),
-      body: PageView.builder(
-        controller: _controller,
-        itemCount: widget.photos.length,
-        onPageChanged: (index) => setState(() => _index = index),
-        itemBuilder: (_, index) {
-          final item = widget.photos[index];
-          return InteractiveViewer(
-            minScale: 0.8,
-            maxScale: 5,
-            child: Center(
-              child: Hero(
-                tag: item.path,
-                child: _GpuFriendlyImage(path: item.path, fit: BoxFit.contain),
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: PageView.builder(
+              controller: _controller,
+              itemCount: widget.photos.length,
+              onPageChanged: (index) => setState(() => _index = index),
+              itemBuilder: (_, index) {
+                final item = widget.photos[index];
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 86),
+                  child: InteractiveViewer(
+                    minScale: 0.8,
+                    maxScale: 5,
+                    child: Center(
+                      child: Hero(
+                        tag: item.path,
+                        child: _GpuFriendlyImage(
+                          path: item.path,
+                          fit: BoxFit.contain,
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          if (widget.photos.length > 1)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: _ViewerMiniTimeline(
+                photos: widget.photos,
+                activeIndex: _index,
+                onSelectIndex: _openAt,
               ),
             ),
-          );
-        },
+        ],
       ),
+    );
+  }
+
+  void _openAt(int index) {
+    if (index == _index) return;
+    setState(() => _index = index);
+    _controller.animateToPage(
+      index,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
     );
   }
 }
