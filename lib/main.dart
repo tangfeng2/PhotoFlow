@@ -1508,7 +1508,7 @@ class _ZoomHud extends StatelessWidget {
     return Card(
       color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.9),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
