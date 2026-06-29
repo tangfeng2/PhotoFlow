@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' hide Size;
 import 'dart:io';
@@ -136,24 +137,39 @@ class AndroidPhotoBridge {
     }
     return bytes;
   }
+
+  static Future<String> getThumbnailPath(String uri, int size) async {
+    final path = await _channel.invokeMethod<String>(
+      'getThumbnailPath',
+      {'uri': uri, 'size': size},
+    );
+    if (path == null || path.isEmpty) {
+      throw StateError('Android returned no thumbnail path.');
+    }
+    return path;
+  }
 }
 
 class AndroidImageCache {
   AndroidImageCache._();
 
-  static const _maxThumbnails = 180;
+  static const _maxThumbnails = 400;
   static const _maxFullImages = 4;
-  static final _thumbnails = <String, Future<Uint8List>>{};
+  static const _maxThumbnailLoads = 6;
+  static int _activeThumbnailLoads = 0;
+  static final _thumbnailWaiters = <Completer<void>>[];
+  static final _thumbnails = <String, Future<String>>{};
   static final _fullImages = <String, Future<Uint8List>>{};
 
-  static Future<Uint8List> thumbnail(String uri) {
-    final cached = _thumbnails.remove(uri);
+  static Future<String> thumbnailPath(String uri, {int size = 224}) {
+    final key = '$size|$uri';
+    final cached = _thumbnails.remove(key);
     if (cached != null) {
-      _thumbnails[uri] = cached;
+      _thumbnails[key] = cached;
       return cached;
     }
-    final future = AndroidPhotoBridge.readThumbnailBytes(uri, 320);
-    _thumbnails[uri] = future;
+    final future = _queuedThumbnailPath(uri, size);
+    _thumbnails[key] = future;
     _evictOldest(_thumbnails, _maxThumbnails);
     return future;
   }
@@ -170,7 +186,43 @@ class AndroidImageCache {
     return future;
   }
 
-  static void _evictOldest(Map<String, Future<Uint8List>> cache, int maxItems) {
+  static Future<String> _queuedThumbnailPath(String uri, int size) async {
+    await _acquireThumbnailSlot();
+    try {
+      return await AndroidPhotoBridge.getThumbnailPath(uri, size);
+    } finally {
+      _releaseThumbnailSlot();
+    }
+  }
+
+  static Future<void> _acquireThumbnailSlot() async {
+    if (_activeThumbnailLoads < _maxThumbnailLoads) {
+      _activeThumbnailLoads++;
+      return;
+    }
+    final waiter = Completer<void>();
+    _thumbnailWaiters.add(waiter);
+    await waiter.future;
+    _activeThumbnailLoads++;
+  }
+
+  static void _releaseThumbnailSlot() {
+    _activeThumbnailLoads = math.max(0, _activeThumbnailLoads - 1);
+    if (_thumbnailWaiters.isNotEmpty) {
+      _thumbnailWaiters.removeAt(0).complete();
+    }
+  }
+
+  static void prefetchThumbnails(Iterable<PhotoAsset> photos) {
+    if (!Platform.isAndroid) return;
+    for (final photo in photos) {
+      if (photo.path.startsWith('content://')) {
+        thumbnailPath(photo.path);
+      }
+    }
+  }
+
+  static void _evictOldest<T>(Map<String, Future<T>> cache, int maxItems) {
     while (cache.length > maxItems) {
       cache.remove(cache.keys.first);
     }
@@ -318,6 +370,7 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
         _photos = photos;
         _selected = photos.firstOrNull;
       });
+      AndroidImageCache.prefetchThumbnails(photos.take(96));
     } catch (error) {
       setState(() => _error = '$error');
     } finally {
@@ -870,7 +923,10 @@ class _MapTile extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            _GpuFriendlyImage(path: photo.path),
+            _GpuFriendlyImage(
+              path: photo.path,
+              thumbnailSize: tile < 44 ? 96 : (tile < 96 ? 160 : 224),
+            ),
             if (selected && tile >= 42)
               ColoredBox(color: Colors.white.withValues(alpha: 0.12)),
             if (showChrome)
@@ -1366,20 +1422,42 @@ class _PhotoTile extends StatelessWidget {
 }
 
 class _GpuFriendlyImage extends StatelessWidget {
-  const _GpuFriendlyImage({required this.path, this.fit = BoxFit.cover});
+  const _GpuFriendlyImage({
+    required this.path,
+    this.fit = BoxFit.cover,
+    this.thumbnailSize = 224,
+  });
 
   final String path;
   final BoxFit fit;
+  final int thumbnailSize;
 
   @override
   Widget build(BuildContext context) {
     if (Platform.isAndroid && path.startsWith('content://')) {
-      final imageFuture = fit == BoxFit.contain
-          ? AndroidImageCache.fullImage(path)
-          : AndroidImageCache.thumbnail(path);
+      if (fit != BoxFit.contain) {
+        return RepaintBoundary(
+          child: FutureBuilder<String>(
+            future: AndroidImageCache.thumbnailPath(path, size: thumbnailSize),
+            builder: (context, snapshot) {
+              if (snapshot.hasData) {
+                return Image.file(
+                  File(snapshot.data!),
+                  fit: fit,
+                  filterQuality: FilterQuality.low,
+                  cacheWidth: thumbnailSize,
+                  errorBuilder: (_, __, ___) => const _ImageErrorBox(),
+                );
+              }
+              if (snapshot.hasError) return const _ImageErrorBox();
+              return const _ImagePlaceholder();
+            },
+          ),
+        );
+      }
       return RepaintBoundary(
         child: FutureBuilder<Uint8List>(
-          future: imageFuture,
+          future: AndroidImageCache.fullImage(path),
           builder: (context, snapshot) {
             if (snapshot.hasData) {
               return Image.memory(
@@ -1388,16 +1466,8 @@ class _GpuFriendlyImage extends StatelessWidget {
                 filterQuality: FilterQuality.medium,
               );
             }
-            if (snapshot.hasError) {
-              return const ColoredBox(
-                color: Color(0xff3a3a3c),
-                child: Icon(Icons.broken_image_outlined, color: Colors.white54),
-              );
-            }
-            return const ColoredBox(
-              color: Color(0xffd1d1d6),
-              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            );
+            if (snapshot.hasError) return const _ImageErrorBox();
+            return const _ImagePlaceholder(showSpinner: true);
           },
         ),
       );
@@ -1409,16 +1479,38 @@ class _GpuFriendlyImage extends StatelessWidget {
         filterQuality: FilterQuality.medium,
         frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
           if (wasSynchronouslyLoaded || frame != null) return child;
-          return const ColoredBox(
-            color: Color(0xffd1d1d6),
-            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
-          );
+          return const _ImagePlaceholder(showSpinner: true);
         },
-        errorBuilder: (_, __, ___) => const ColoredBox(
-          color: Color(0xff3a3a3c),
-          child: Icon(Icons.broken_image_outlined, color: Colors.white54),
-        ),
+        errorBuilder: (_, __, ___) => const _ImageErrorBox(),
       ),
+    );
+  }
+}
+
+class _ImagePlaceholder extends StatelessWidget {
+  const _ImagePlaceholder({this.showSpinner = false});
+
+  final bool showSpinner;
+
+  @override
+  Widget build(BuildContext context) {
+    return ColoredBox(
+      color: const Color(0xff2c2c2e),
+      child: showSpinner
+          ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+          : null,
+    );
+  }
+}
+
+class _ImageErrorBox extends StatelessWidget {
+  const _ImageErrorBox();
+
+  @override
+  Widget build(BuildContext context) {
+    return const ColoredBox(
+      color: Color(0xff3a3a3c),
+      child: Icon(Icons.broken_image_outlined, color: Colors.white54),
     );
   }
 }

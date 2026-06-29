@@ -10,6 +10,8 @@ import android.os.Build
 import android.provider.MediaStore
 import android.util.Size
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
@@ -40,6 +42,15 @@ class MainActivity : FlutterActivity() {
                         result.error("missing_uri", "Missing image URI.", null)
                     } else {
                         readThumbnailBytes(uri, size, result)
+                    }
+                }
+                "getThumbnailPath" -> {
+                    val uri = call.argument<String>("uri")
+                    val size = call.argument<Int>("size") ?: 224
+                    if (uri.isNullOrBlank()) {
+                        result.error("missing_uri", "Missing image URI.", null)
+                    } else {
+                        getThumbnailPath(uri, size, result)
                     }
                 }
                 else -> result.notImplemented()
@@ -161,12 +172,7 @@ class MainActivity : FlutterActivity() {
 
     private fun readThumbnailBytes(uriString: String, size: Int, result: MethodChannel.Result) {
         try {
-            val uri = Uri.parse(uriString)
-            val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                contentResolver.loadThumbnail(uri, Size(size, size), null)
-            } else {
-                decodeSampledBitmap(uri, size)
-            }
+            val bitmap = loadThumbnailBitmap(Uri.parse(uriString), size)
 
             if (bitmap == null) {
                 result.error("thumbnail_failed", "Could not decode image thumbnail.", null)
@@ -180,6 +186,43 @@ class MainActivity : FlutterActivity() {
         } catch (error: Exception) {
             result.error("thumbnail_failed", error.message, null)
         }
+    }
+
+    private fun getThumbnailPath(uriString: String, size: Int, result: MethodChannel.Result) {
+        try {
+            val cacheFile = thumbnailCacheFile(uriString, size)
+            if (cacheFile.exists() && cacheFile.length() > 0L) {
+                result.success(cacheFile.absolutePath)
+                return
+            }
+
+            val bitmap = loadThumbnailBitmap(Uri.parse(uriString), size)
+            if (bitmap == null) {
+                result.error("thumbnail_failed", "Could not decode image thumbnail.", null)
+                return
+            }
+
+            cacheFile.parentFile?.mkdirs()
+            FileOutputStream(cacheFile).use { stream ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 76, stream)
+            }
+            result.success(cacheFile.absolutePath)
+        } catch (error: Exception) {
+            result.error("thumbnail_failed", error.message, null)
+        }
+    }
+
+    private fun loadThumbnailBitmap(uri: Uri, size: Int): Bitmap? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            contentResolver.loadThumbnail(uri, Size(size, size), null)
+        } else {
+            decodeSampledBitmap(uri, size)
+        }
+    }
+
+    private fun thumbnailCacheFile(uriString: String, size: Int): File {
+        val name = "${size}_${Integer.toHexString(uriString.hashCode())}.jpg"
+        return File(File(cacheDir, "photo_thumbs"), name)
     }
 
     private fun decodeSampledBitmap(uri: Uri, requestedSize: Int): Bitmap? {
