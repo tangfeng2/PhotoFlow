@@ -1,9 +1,10 @@
 import 'dart:convert';
-import 'dart:ffi';
+import 'dart:ffi' hide Size;
 import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:ffi/ffi.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 void main() => runApp(const PhotosApp());
@@ -102,6 +103,8 @@ class RustPhotoCore {
       : _scan = _lib.lookupFunction<_ScanNative, _ScanDart>('scan_photos_json'),
         _free = _lib.lookupFunction<_FreeNative, _FreeDart>('free_rust_string');
 
+  // Kept to pin the dynamic library for the lifetime of the lookup functions.
+  // ignore: unused_field
   final DynamicLibrary _lib;
   final _ScanDart _scan;
   final _FreeDart _free;
@@ -237,8 +240,9 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
 
   List<PhotoAsset> get _visiblePhotos {
     Iterable<PhotoAsset> items = _photos;
-    if (_section == LibrarySection.favorites)
+    if (_section == LibrarySection.favorites) {
       items = items.where((p) => p.favorite);
+    }
     final q = _query.trim().toLowerCase();
     if (q.isNotEmpty) {
       items = items.where((p) =>
@@ -316,9 +320,12 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
   }
 
   Widget _content() {
-    if (_loading) return const Center(child: CircularProgressIndicator());
-    if (_error != null)
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null) {
       return _EmptyState(title: 'Scan failed', subtitle: _error!);
+    }
     if (_photos.isEmpty) {
       return const _EmptyState(
         title: 'No photos found',
@@ -517,24 +524,355 @@ class _LibraryGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GridView.builder(
-      padding: const EdgeInsets.all(16),
-      gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: _tileSize(MediaQuery.sizeOf(context).width),
-        mainAxisSpacing: 10,
-        crossAxisSpacing: 10,
-      ),
-      itemCount: photos.length,
-      itemBuilder: (context, index) {
-        final photo = photos[index];
-        return _PhotoTile(
-          photo: photo,
-          selected: selected?.path == photo.path,
-          onTap: () => onSelect(photo),
-          onDoubleTap: () => onOpen(photo),
+    return _ZoomablePhotoMap(
+      photos: photos,
+      selected: selected,
+      onSelect: onSelect,
+      onOpen: onOpen,
+    );
+  }
+}
+
+class _ZoomablePhotoMap extends StatefulWidget {
+  const _ZoomablePhotoMap({
+    required this.photos,
+    required this.selected,
+    required this.onSelect,
+    required this.onOpen,
+  });
+
+  final List<PhotoAsset> photos;
+  final PhotoAsset? selected;
+  final ValueChanged<PhotoAsset> onSelect;
+  final ValueChanged<PhotoAsset> onOpen;
+
+  @override
+  State<_ZoomablePhotoMap> createState() => _ZoomablePhotoMapState();
+}
+
+class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
+  static const _minTile = 10.0;
+  static const _maxTile = 420.0;
+  static const _initialTile = 96.0;
+
+  Offset _offset = const Offset(20, 20);
+  double _tile = _initialTile;
+  late Offset _startOffset;
+  late double _startTile;
+  late Offset _startFocal;
+
+  @override
+  void didUpdateWidget(covariant _ZoomablePhotoMap oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.photos.length != widget.photos.length) {
+      _offset = const Offset(20, 20);
+      _tile = _initialTile;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final size = Size(constraints.maxWidth, constraints.maxHeight);
+        final columns = _columnsFor(widget.photos.length, size.aspectRatio);
+        final rows = (widget.photos.length / columns).ceil();
+        final contentSize = Size(columns * _tile, rows * _tile);
+        final visible = _visibleIndexes(
+          count: widget.photos.length,
+          columns: columns,
+          viewport: size,
+          offset: _offset,
+          tile: _tile,
+        );
+
+        return Listener(
+          onPointerSignal: (event) {
+            if (event is PointerScrollEvent) {
+              final factor = event.scrollDelta.dy > 0 ? 0.88 : 1.14;
+              _zoomAt(event.localPosition, factor, size, contentSize);
+            }
+          },
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onDoubleTapDown: (details) {
+              final index = _indexAt(details.localPosition, columns);
+              if (index != null) {
+                widget.onOpen(widget.photos[index]);
+              }
+            },
+            onTapUp: (details) {
+              final index = _indexAt(details.localPosition, columns);
+              if (index != null) {
+                widget.onSelect(widget.photos[index]);
+              }
+            },
+            onScaleStart: (details) {
+              _startOffset = _offset;
+              _startTile = _tile;
+              _startFocal = details.localFocalPoint;
+            },
+            onScaleUpdate: (details) {
+              final nextTile =
+                  (_startTile * details.scale).clamp(_minTile, _maxTile);
+              final worldAtStart = (_startFocal - _startOffset) / _startTile;
+              final nextOffset = details.localFocalPoint -
+                  worldAtStart * nextTile +
+                  details.localFocalPoint -
+                  _startFocal;
+              setState(() {
+                _tile = nextTile;
+                _offset = _clampOffset(nextOffset, size,
+                    Size(columns * nextTile, rows * nextTile));
+              });
+            },
+            child: ClipRect(
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: CustomPaint(
+                      painter: _MapBackgroundPainter(
+                        offset: _offset,
+                        tile: _tile,
+                        columns: columns,
+                        rows: rows,
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
+                    ),
+                  ),
+                  for (final index in visible)
+                    _MapTile(
+                      key: ValueKey(widget.photos[index].path),
+                      photo: widget.photos[index],
+                      selected:
+                          widget.selected?.path == widget.photos[index].path,
+                      rect: _rectFor(index, columns),
+                      tile: _tile,
+                      offset: _offset,
+                    ),
+                  Positioned(
+                    left: 12,
+                    bottom: 12,
+                    child: _ZoomHud(
+                      photos: widget.photos.length,
+                      visible: visible.length,
+                      tile: _tile,
+                      onReset: () => setState(() {
+                        _tile = _initialTile;
+                        _offset = const Offset(20, 20);
+                      }),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         );
       },
     );
+  }
+
+  void _zoomAt(Offset focal, double factor, Size viewport, Size contentSize) {
+    final nextTile = (_tile * factor).clamp(_minTile, _maxTile);
+    final world = (focal - _offset) / _tile;
+    final scale = nextTile / _tile;
+    final nextContent = contentSize * scale;
+    setState(() {
+      _tile = nextTile;
+      _offset = _clampOffset(focal - world * nextTile, viewport, nextContent);
+    });
+  }
+
+  int? _indexAt(Offset localPosition, int columns) {
+    final world = localPosition - _offset;
+    if (world.dx < 0 || world.dy < 0) return null;
+    final column = world.dx ~/ _tile;
+    final row = world.dy ~/ _tile;
+    if (column < 0 || column >= columns || row < 0) return null;
+    final index = row * columns + column;
+    if (index < 0 || index >= widget.photos.length) return null;
+    return index;
+  }
+
+  Rect _rectFor(int index, int columns) {
+    final column = index % columns;
+    final row = index ~/ columns;
+    return Rect.fromLTWH(column * _tile, row * _tile, _tile, _tile);
+  }
+
+  List<int> _visibleIndexes({
+    required int count,
+    required int columns,
+    required Size viewport,
+    required Offset offset,
+    required double tile,
+  }) {
+    final startColumn = math.max(0, ((-offset.dx) / tile).floor() - 2);
+    final endColumn =
+        math.min(columns - 1, ((viewport.width - offset.dx) / tile).ceil() + 2);
+    final startRow = math.max(0, ((-offset.dy) / tile).floor() - 2);
+    final endRow = math.min((count / columns).ceil() - 1,
+        ((viewport.height - offset.dy) / tile).ceil() + 2);
+    final indexes = <int>[];
+    for (var row = startRow; row <= endRow; row++) {
+      for (var column = startColumn; column <= endColumn; column++) {
+        final index = row * columns + column;
+        if (index >= 0 && index < count) indexes.add(index);
+      }
+    }
+    return indexes;
+  }
+
+  int _columnsFor(int count, double aspectRatio) {
+    if (count <= 0) return 1;
+    final base = math.sqrt(count * math.max(0.65, aspectRatio));
+    return math.max(1, base.ceil());
+  }
+
+  Offset _clampOffset(Offset offset, Size viewport, Size content) {
+    final minX = math.min(20.0, viewport.width - content.width - 20);
+    final minY = math.min(20.0, viewport.height - content.height - 20);
+    final maxX = 20.0;
+    final maxY = 20.0;
+    return Offset(offset.dx.clamp(minX, maxX), offset.dy.clamp(minY, maxY));
+  }
+}
+
+class _MapTile extends StatelessWidget {
+  const _MapTile({
+    super.key,
+    required this.photo,
+    required this.selected,
+    required this.rect,
+    required this.tile,
+    required this.offset,
+  });
+
+  final PhotoAsset photo;
+  final bool selected;
+  final Rect rect;
+  final double tile;
+  final Offset offset;
+
+  @override
+  Widget build(BuildContext context) {
+    final gap = tile < 28 ? 0.5 : 2.0;
+    final showChrome = tile >= 72;
+    return Positioned(
+      left: offset.dx + rect.left + gap,
+      top: offset.dy + rect.top + gap,
+      width: math.max(1, rect.width - gap * 2),
+      height: math.max(1, rect.height - gap * 2),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border.all(
+            color: selected
+                ? Theme.of(context).colorScheme.primary
+                : Colors.transparent,
+            width: selected ? 3 : 0,
+          ),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(tile < 40 ? 1 : 8),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              _GpuFriendlyImage(path: photo.path),
+              if (showChrome)
+                Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: _TileLabel(photo: photo)),
+              if (photo.favorite && tile >= 42)
+                const Positioned(
+                  right: 5,
+                  top: 5,
+                  child: Icon(Icons.favorite, color: Colors.white, size: 18),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ZoomHud extends StatelessWidget {
+  const _ZoomHud({
+    required this.photos,
+    required this.visible,
+    required this.tile,
+    required this.onReset,
+  });
+
+  final int photos;
+  final int visible;
+  final double tile;
+  final VoidCallback onReset;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.9),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+                '$photos photos • $visible rendered • ${tile.toStringAsFixed(0)}px'),
+            const SizedBox(width: 8),
+            TextButton(onPressed: onReset, child: const Text('Reset')),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MapBackgroundPainter extends CustomPainter {
+  const _MapBackgroundPainter({
+    required this.offset,
+    required this.tile,
+    required this.columns,
+    required this.rows,
+    required this.color,
+  });
+
+  final Offset offset;
+  final double tile;
+  final int columns;
+  final int rows;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (tile < 24) return;
+    final paint = Paint()
+      ..color = color.withValues(alpha: 0.45)
+      ..strokeWidth = 0.6;
+    final width = columns * tile;
+    final height = rows * tile;
+    for (var x = offset.dx; x <= offset.dx + width; x += tile) {
+      if (x >= 0 && x <= size.width) {
+        canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+      }
+    }
+    for (var y = offset.dy; y <= offset.dy + height; y += tile) {
+      if (y >= 0 && y <= size.height) {
+        canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _MapBackgroundPainter oldDelegate) {
+    return oldDelegate.offset != offset ||
+        oldDelegate.tile != tile ||
+        oldDelegate.columns != columns ||
+        oldDelegate.rows != rows ||
+        oldDelegate.color != color;
   }
 }
 
@@ -672,7 +1010,7 @@ class _PhotoTile extends StatelessWidget {
             boxShadow: [
               BoxShadow(
                 blurRadius: selected ? 20 : 8,
-                color: Colors.black.withOpacity(selected ? 0.22 : 0.10),
+                color: Colors.black.withValues(alpha: selected ? 0.22 : 0.10),
               ),
             ],
           ),
@@ -744,7 +1082,7 @@ class _TileLabel extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [Colors.transparent, Colors.black.withOpacity(0.72)],
+          colors: [Colors.transparent, Colors.black.withValues(alpha: 0.72)],
         ),
       ),
       child: Padding(
@@ -947,13 +1285,6 @@ Map<K, List<T>> _groupBy<T, K>(Iterable<T> items, K Function(T) keyOf) {
     map.putIfAbsent(keyOf(item), () => []).add(item);
   }
   return map;
-}
-
-double _tileSize(double width) {
-  if (width > 1600) return 190;
-  if (width > 1100) return 170;
-  if (width > 700) return 150;
-  return 120;
 }
 
 String _defaultPicturesPath() {

@@ -6,7 +6,7 @@ Flutter + Rust photo viewer/manager inspired by iOS Photos.
 
 - Flutter Material 3 UI with:
   - responsive sidebar
-  - library grid
+  - zoomable, virtualized library mosaic
   - timeline grouping
   - albums
   - favorites
@@ -27,12 +27,24 @@ Build the Rust core:
     cd rust
     cargo build --release
 
-Copy the produced dynamic library beside the app executable, or run without it to use the Dart fallback scanner.
+On Windows, copy the Rust DLL into the Flutter runner output:
+
+    powershell -ExecutionPolicy Bypass -File tool/copy_rust_core.ps1
+
+You can also run without the DLL; the app automatically falls back to the Dart scanner.
 
 Then:
 
     flutter pub get
     flutter run -d windows
+
+## Library controls
+
+- Mouse wheel / trackpad pinch: zoom in or out of the full photo mosaic.
+- Drag: pan around the library.
+- Click: select a photo and show metadata.
+- Double-click / double-tap: open the frame viewer.
+- In the viewer: swipe between photos, pinch/scroll to inspect the current image.
 
 ## Rust library names
 
