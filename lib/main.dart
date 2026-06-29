@@ -6,6 +6,7 @@ import 'dart:math' as math;
 import 'package:ffi/ffi.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 void main() => runApp(const PhotosApp());
 
@@ -43,6 +44,7 @@ class PhotoAsset {
     required this.extension,
     this.width,
     this.height,
+    this.albumName,
     this.favorite = false,
   });
 
@@ -53,6 +55,7 @@ class PhotoAsset {
   final String extension;
   final int? width;
   final int? height;
+  final String? albumName;
   final bool favorite;
 
   String get dayKey {
@@ -61,6 +64,8 @@ class PhotoAsset {
   }
 
   String get albumKey {
+    final album = albumName?.trim();
+    if (album != null && album.isNotEmpty) return album;
     final parent = File(path).parent.path;
     return parent.split(Platform.pathSeparator).last;
   }
@@ -74,6 +79,7 @@ class PhotoAsset {
       extension: extension,
       width: width,
       height: height,
+      albumName: albumName,
       favorite: favorite ?? this.favorite,
     );
   }
@@ -89,7 +95,34 @@ class PhotoAsset {
       extension: json['extension'] as String? ?? '',
       width: json['width'] as int?,
       height: json['height'] as int?,
+      albumName: json['album'] as String?,
     );
+  }
+}
+
+class AndroidPhotoBridge {
+  AndroidPhotoBridge._();
+
+  static const _channel = MethodChannel('photos_app/android_photos');
+
+  static Future<List<PhotoAsset>> scanPhotos() async {
+    final data = await _channel.invokeListMethod<Map<dynamic, dynamic>>(
+      'scanPhotos',
+    );
+    return (data ?? const <Map<dynamic, dynamic>>[])
+        .map((item) => PhotoAsset.fromJson(Map<String, dynamic>.from(item)))
+        .toList(growable: false);
+  }
+
+  static Future<Uint8List> readImageBytes(String uri) async {
+    final bytes = await _channel.invokeMethod<Uint8List>(
+      'readImageBytes',
+      {'uri': uri},
+    );
+    if (bytes == null) {
+      throw StateError('Android returned no image bytes.');
+    }
+    return bytes;
   }
 }
 
@@ -148,6 +181,9 @@ class PhotoRepository {
   bool get usingRust => _core != null;
 
   Future<List<PhotoAsset>> scan(String root) async {
+    if (Platform.isAndroid) {
+      return AndroidPhotoBridge.scanPhotos();
+    }
     final core = _core;
     if (core != null) return core.scan(root);
     return _scanWithDart(root);
@@ -400,16 +436,30 @@ class _TopBar extends StatelessWidget {
             children: [
               Expanded(
                 flex: 2,
-                child: TextField(
-                  controller: folderController,
-                  decoration: const InputDecoration(
-                    prefixIcon: Icon(Icons.folder_outlined),
-                    border: OutlineInputBorder(),
-                    labelText: 'Photo folder',
-                    isDense: true,
-                  ),
-                  onSubmitted: (_) => onScan(),
-                ),
+                child: Platform.isAndroid
+                    ? InputDecorator(
+                        decoration: const InputDecoration(
+                          prefixIcon: Icon(Icons.photo_library_outlined),
+                          border: OutlineInputBorder(),
+                          labelText: 'Source',
+                          isDense: true,
+                        ),
+                        child: Text(
+                          folderController.text,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      )
+                    : TextField(
+                        controller: folderController,
+                        decoration: const InputDecoration(
+                          prefixIcon: Icon(Icons.folder_outlined),
+                          border: OutlineInputBorder(),
+                          labelText: 'Photo folder',
+                          isDense: true,
+                        ),
+                        onSubmitted: (_) => onScan(),
+                      ),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -428,7 +478,7 @@ class _TopBar extends StatelessWidget {
               FilledButton.icon(
                 onPressed: onScan,
                 icon: const Icon(Icons.sync),
-                label: const Text('Scan'),
+                label: Text(Platform.isAndroid ? 'Load' : 'Scan'),
               ),
             ],
           ),
@@ -750,8 +800,8 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
     final maxZoomColumns = aspectRatio < 1 ? 1 : count;
     if (zoomProgress >= 0.98) return maxZoomColumns;
     final stripProgress = math.pow(zoomProgress, 4).toDouble();
-    final columns =
-        startColumns + ((maxZoomColumns - startColumns) * stripProgress).round();
+    final columns = startColumns +
+        ((maxZoomColumns - startColumns) * stripProgress).round();
     return columns.clamp(1, count);
   }
 
@@ -1151,16 +1201,43 @@ class _PhotoTile extends StatelessWidget {
 }
 
 class _GpuFriendlyImage extends StatelessWidget {
-  const _GpuFriendlyImage({required this.path});
+  const _GpuFriendlyImage({required this.path, this.fit = BoxFit.cover});
 
   final String path;
+  final BoxFit fit;
 
   @override
   Widget build(BuildContext context) {
+    if (Platform.isAndroid && path.startsWith('content://')) {
+      return RepaintBoundary(
+        child: FutureBuilder<Uint8List>(
+          future: AndroidPhotoBridge.readImageBytes(path),
+          builder: (context, snapshot) {
+            if (snapshot.hasData) {
+              return Image.memory(
+                snapshot.data!,
+                fit: fit,
+                filterQuality: FilterQuality.medium,
+              );
+            }
+            if (snapshot.hasError) {
+              return const ColoredBox(
+                color: Color(0xff3a3a3c),
+                child: Icon(Icons.broken_image_outlined, color: Colors.white54),
+              );
+            }
+            return const ColoredBox(
+              color: Color(0xffd1d1d6),
+              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            );
+          },
+        ),
+      );
+    }
     return RepaintBoundary(
       child: Image.file(
         File(path),
-        fit: BoxFit.cover,
+        fit: fit,
         filterQuality: FilterQuality.medium,
         frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
           if (wasSynchronouslyLoaded || frame != null) return child;
@@ -1325,7 +1402,7 @@ class _PhotoViewerState extends State<_PhotoViewer> {
             child: Center(
               child: Hero(
                 tag: item.path,
-                child: Image.file(File(item.path), fit: BoxFit.contain),
+                child: _GpuFriendlyImage(path: item.path, fit: BoxFit.contain),
               ),
             ),
           );
@@ -1396,6 +1473,7 @@ Map<K, List<T>> _groupBy<T, K>(Iterable<T> items, K Function(T) keyOf) {
 }
 
 String _defaultPicturesPath() {
+  if (Platform.isAndroid) return 'Device photos';
   final home = Platform.environment['USERPROFILE'] ??
       Platform.environment['HOME'] ??
       '.';
