@@ -3,9 +3,13 @@ package com.example.photos_app
 import android.Manifest
 import android.content.ContentUris
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import android.util.Size
+import java.io.ByteArrayOutputStream
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
@@ -27,6 +31,15 @@ class MainActivity : FlutterActivity() {
                         result.error("missing_uri", "Missing image URI.", null)
                     } else {
                         readImageBytes(uri, result)
+                    }
+                }
+                "readThumbnailBytes" -> {
+                    val uri = call.argument<String>("uri")
+                    val size = call.argument<Int>("size") ?: 320
+                    if (uri.isNullOrBlank()) {
+                        result.error("missing_uri", "Missing image URI.", null)
+                    } else {
+                        readThumbnailBytes(uri, size, result)
                     }
                 }
                 else -> result.notImplemented()
@@ -144,6 +157,68 @@ class MainActivity : FlutterActivity() {
         } catch (error: Exception) {
             result.error("read_failed", error.message, null)
         }
+    }
+
+    private fun readThumbnailBytes(uriString: String, size: Int, result: MethodChannel.Result) {
+        try {
+            val uri = Uri.parse(uriString)
+            val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                contentResolver.loadThumbnail(uri, Size(size, size), null)
+            } else {
+                decodeSampledBitmap(uri, size)
+            }
+
+            if (bitmap == null) {
+                result.error("thumbnail_failed", "Could not decode image thumbnail.", null)
+                return
+            }
+
+            ByteArrayOutputStream().use { stream ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 78, stream)
+                result.success(stream.toByteArray())
+            }
+        } catch (error: Exception) {
+            result.error("thumbnail_failed", error.message, null)
+        }
+    }
+
+    private fun decodeSampledBitmap(uri: Uri, requestedSize: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, bounds)
+        }
+
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = calculateInSampleSize(bounds, requestedSize, requestedSize)
+        }
+        return contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, decodeOptions)
+        }
+    }
+
+    private fun calculateInSampleSize(
+        options: BitmapFactory.Options,
+        requestedWidth: Int,
+        requestedHeight: Int
+    ): Int {
+        val height = options.outHeight
+        val width = options.outWidth
+        var inSampleSize = 1
+
+        if (height > requestedHeight || width > requestedWidth) {
+            var halfHeight = height / 2
+            var halfWidth = width / 2
+            while (
+                halfHeight / inSampleSize >= requestedHeight &&
+                halfWidth / inSampleSize >= requestedWidth
+            ) {
+                inSampleSize *= 2
+            }
+        }
+
+        return inSampleSize
     }
 
     override fun onRequestPermissionsResult(

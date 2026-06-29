@@ -124,6 +124,56 @@ class AndroidPhotoBridge {
     }
     return bytes;
   }
+
+  static Future<Uint8List> readThumbnailBytes(String uri, int size) async {
+    final bytes = await _channel.invokeMethod<Uint8List>(
+      'readThumbnailBytes',
+      {'uri': uri, 'size': size},
+    );
+    if (bytes == null) {
+      throw StateError('Android returned no thumbnail bytes.');
+    }
+    return bytes;
+  }
+}
+
+class AndroidImageCache {
+  AndroidImageCache._();
+
+  static const _maxThumbnails = 180;
+  static const _maxFullImages = 4;
+  static final _thumbnails = <String, Future<Uint8List>>{};
+  static final _fullImages = <String, Future<Uint8List>>{};
+
+  static Future<Uint8List> thumbnail(String uri) {
+    final cached = _thumbnails.remove(uri);
+    if (cached != null) {
+      _thumbnails[uri] = cached;
+      return cached;
+    }
+    final future = AndroidPhotoBridge.readThumbnailBytes(uri, 320);
+    _thumbnails[uri] = future;
+    _evictOldest(_thumbnails, _maxThumbnails);
+    return future;
+  }
+
+  static Future<Uint8List> fullImage(String uri) {
+    final cached = _fullImages.remove(uri);
+    if (cached != null) {
+      _fullImages[uri] = cached;
+      return cached;
+    }
+    final future = AndroidPhotoBridge.readImageBytes(uri);
+    _fullImages[uri] = future;
+    _evictOldest(_fullImages, _maxFullImages);
+    return future;
+  }
+
+  static void _evictOldest(Map<String, Future<Uint8List>> cache, int maxItems) {
+    while (cache.length > maxItems) {
+      cache.remove(cache.keys.first);
+    }
+  }
 }
 
 typedef _ScanNative = Pointer<Utf8> Function(Pointer<Utf8>);
@@ -1209,9 +1259,12 @@ class _GpuFriendlyImage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (Platform.isAndroid && path.startsWith('content://')) {
+      final imageFuture = fit == BoxFit.contain
+          ? AndroidImageCache.fullImage(path)
+          : AndroidImageCache.thumbnail(path);
       return RepaintBoundary(
         child: FutureBuilder<Uint8List>(
-          future: AndroidPhotoBridge.readImageBytes(path),
+          future: imageFuture,
           builder: (context, snapshot) {
             if (snapshot.hasData) {
               return Image.memory(
