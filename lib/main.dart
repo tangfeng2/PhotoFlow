@@ -418,9 +418,12 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
   LibrarySection _section = LibrarySection.library;
   List<PhotoAsset> _photos = [];
   PhotoAsset? _selected;
+  final Set<String> _selectedPaths = {};
   bool _loading = false;
   String? _error;
   String _query = '';
+
+  bool get _selectionMode => _selectedPaths.isNotEmpty;
 
   @override
   void initState() {
@@ -444,7 +447,8 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
       final photos = await _repo.scan(_folderController.text.trim());
       setState(() {
         _photos = photos;
-        _selected = photos.firstOrNull;
+        _selected = null;
+        _selectedPaths.clear();
       });
       AndroidImageCache.prefetchThumbnails(photos.take(96));
     } catch (error) {
@@ -479,6 +483,11 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
             item,
       ];
       _selected = _photos.where((p) => p.path == photo.path).firstOrNull;
+      if (_selected != null && _selectedPaths.contains(photo.path)) {
+        _selectedPaths
+          ..remove(photo.path)
+          ..add(_selected!.path);
+      }
     });
   }
 
@@ -530,6 +539,7 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
             if (item.path == photo.path) renamed else item,
         ];
         if (_selected?.path == photo.path) _selected = renamed;
+        if (_selectedPaths.remove(photo.path)) _selectedPaths.add(renamed.path);
       });
       _showSnack('Renamed');
       return renamed;
@@ -570,7 +580,8 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
           for (final item in _photos)
             if (item.path != photo.path) item
         ];
-        _selected = _photos.firstOrNull;
+        _selectedPaths.remove(photo.path);
+        _selected = _resolveSelectedFallback();
       });
       _showSnack('Deleted');
       return true;
@@ -589,8 +600,29 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= 980;
-    return Scaffold(
-      body: SafeArea(
+    return Shortcuts(
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.escape): DismissIntent(),
+      },
+      child: Actions(
+        actions: {
+          DismissIntent: CallbackAction<DismissIntent>(
+            onInvoke: (_) {
+              if (_selectionMode) {
+                _clearSelection();
+                return null;
+              }
+              return null;
+            },
+          ),
+        },
+        child: PopScope(
+          canPop: !_selectionMode,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop && _selectionMode) _clearSelection();
+          },
+          child: Scaffold(
+            body: SafeArea(
         child: Row(
           children: [
             if (wide)
@@ -613,6 +645,11 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
                     usingRust: _repo.usingRust,
                     onScan: _scan,
                     onSearch: (value) => setState(() => _query = value),
+                    selectionMode: _selectionMode,
+                    selectionCount: _selectedPaths.length,
+                    onClearSelection: _clearSelection,
+                    onSelectAll: _selectAll,
+                    onDeleteSelected: _deleteSelected,
                   ),
                   if (!wide)
                     _CompactTabs(
@@ -628,6 +665,7 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
                 width: 360,
                 child: _Inspector(
                   photo: _selected,
+                  selectedCount: _selectedPaths.length,
                   onFavorite: _selected == null
                       ? null
                       : () => _toggleFavorite(_selected!),
@@ -642,6 +680,9 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
                 ),
               ),
           ],
+        ),
+      ),
+          ),
         ),
       ),
     );
@@ -661,25 +702,115 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
       );
     }
     final photos = _visiblePhotos;
+    final selectionMode = _selectionMode;
     if (_section == LibrarySection.timeline) {
       return _TimelineView(
-          photos: photos, onSelect: _select, onOpen: _openViewer);
+        photos: photos,
+        selected: _selected,
+        selectedPaths: _selectedPaths,
+        selectionMode: selectionMode,
+        onSelect: _toggleSelection,
+        onOpen: _openViewer,
+      );
     }
     if (_section == LibrarySection.albums) {
       return _AlbumsView(
-          albums: _albumMap(photos), onSelect: _select, onOpen: _openViewer);
+        albums: _albumMap(photos),
+        selected: _selected,
+        selectedPaths: _selectedPaths,
+        selectionMode: selectionMode,
+        onSelect: _toggleSelection,
+        onOpen: _openViewer,
+      );
     }
     return _LibraryGrid(
         photos: photos,
         selected: _selected,
-        onSelect: _select,
+        selectedPaths: _selectedPaths,
+        selectionMode: selectionMode,
+        onSelect: _toggleSelection,
         onOpen: _openViewer);
   }
 
-  void _select(PhotoAsset photo) => setState(() => _selected = photo);
+  void _toggleSelection(PhotoAsset photo) {
+    setState(() {
+      if (_selectedPaths.contains(photo.path)) {
+        _selectedPaths.remove(photo.path);
+        _selected = _selected?.path == photo.path ? _resolveSelectedFallback() : _selected;
+      } else {
+        _selectedPaths.add(photo.path);
+        _selected = photo;
+      }
+    });
+  }
+
+  void _selectAll() {
+    setState(() {
+      _selectedPaths.addAll(_visiblePhotos.map((p) => p.path));
+      _selected = _visiblePhotos.isNotEmpty ? _visiblePhotos.first : null;
+    });
+  }
+
+  Future<void> _deleteSelected() async {
+    final count = _selectedPaths.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Delete $count photo${count == 1 ? '' : 's'}?'),
+        content: Text(_selectedPaths.take(3).join('\n')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final paths = _selectedPaths.toList();
+    for (final path in paths) {
+      final photo = _photos.where((p) => p.path == path).firstOrNull;
+      if (photo == null) continue;
+      try {
+        await PhotoActions.delete(photo);
+      } catch (_) {}
+    }
+    setState(() {
+      _photos = [
+        for (final item in _photos)
+          if (!_selectedPaths.contains(item.path)) item
+      ];
+      _selectedPaths.clear();
+      _selected = null;
+    });
+    _showSnack('Deleted $count photo${count == 1 ? '' : 's'}');
+  }
+
+  void _clearSelection() {
+    setState(() {
+      _selectedPaths.clear();
+      _selected = null;
+    });
+  }
+
+  PhotoAsset? _resolveSelectedFallback() {
+    for (final photo in _photos) {
+      if (_selectedPaths.contains(photo.path)) return photo;
+    }
+    return null;
+  }
 
   Future<void> _openViewer(PhotoAsset photo) async {
-    _select(photo);
+    _clearSelection();
     await Navigator.of(context).push(MaterialPageRoute<void>(
       fullscreenDialog: true,
       builder: (_) => _PhotoViewer(
@@ -702,6 +833,11 @@ class _TopBar extends StatelessWidget {
     required this.usingRust,
     required this.onScan,
     required this.onSearch,
+    this.selectionMode = false,
+    this.selectionCount = 0,
+    this.onClearSelection,
+    this.onSelectAll,
+    this.onDeleteSelected,
   });
 
   final TextEditingController folderController;
@@ -709,9 +845,44 @@ class _TopBar extends StatelessWidget {
   final bool usingRust;
   final VoidCallback onScan;
   final ValueChanged<String> onSearch;
+  final bool selectionMode;
+  final int selectionCount;
+  final VoidCallback? onClearSelection;
+  final VoidCallback? onSelectAll;
+  final VoidCallback? onDeleteSelected;
 
   @override
   Widget build(BuildContext context) {
+    if (selectionMode) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+        child: Row(
+          children: [
+            Text('$selectionCount selected',
+                style: const TextStyle(
+                    fontSize: 20, fontWeight: FontWeight.w700)),
+            const Spacer(),
+            TextButton.icon(
+              onPressed: onSelectAll,
+              icon: const Icon(Icons.select_all, size: 18),
+              label: const Text('All'),
+            ),
+            const SizedBox(width: 4),
+            TextButton.icon(
+              onPressed: selectionCount == 0 ? null : onDeleteSelected,
+              icon: const Icon(Icons.delete_outline, size: 18),
+              label: const Text('Delete'),
+            ),
+            const SizedBox(width: 4),
+            TextButton.icon(
+              onPressed: onClearSelection,
+              icon: const Icon(Icons.close, size: 18),
+              label: const Text('Cancel'),
+            ),
+          ],
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
       child: Column(
@@ -721,10 +892,6 @@ class _TopBar extends StatelessWidget {
               const Text('Photos',
                   style: TextStyle(fontSize: 34, fontWeight: FontWeight.w800)),
               const Spacer(),
-              // Chip(
-              //   avatar: Icon(usingRust ? Icons.memory : Icons.code, size: 18),
-              //   label: Text(usingRust ? 'Rust core' : 'Dart fallback'),
-              // ),
             ],
           ),
           const SizedBox(height: 12),
@@ -921,12 +1088,16 @@ class _LibraryGrid extends StatelessWidget {
   const _LibraryGrid({
     required this.photos,
     required this.selected,
+    required this.selectedPaths,
+    required this.selectionMode,
     required this.onSelect,
     required this.onOpen,
   });
 
   final List<PhotoAsset> photos;
   final PhotoAsset? selected;
+  final Set<String> selectedPaths;
+  final bool selectionMode;
   final ValueChanged<PhotoAsset> onSelect;
   final ValueChanged<PhotoAsset> onOpen;
 
@@ -935,6 +1106,8 @@ class _LibraryGrid extends StatelessWidget {
     return _ZoomablePhotoMap(
       photos: photos,
       selected: selected,
+      selectedPaths: selectedPaths,
+      selectionMode: selectionMode,
       onSelect: onSelect,
       onOpen: onOpen,
     );
@@ -945,12 +1118,16 @@ class _ZoomablePhotoMap extends StatefulWidget {
   const _ZoomablePhotoMap({
     required this.photos,
     required this.selected,
+    required this.selectedPaths,
+    required this.selectionMode,
     required this.onSelect,
     required this.onOpen,
   });
 
   final List<PhotoAsset> photos;
   final PhotoAsset? selected;
+  final Set<String> selectedPaths;
+  final bool selectionMode;
   final ValueChanged<PhotoAsset> onSelect;
   final ValueChanged<PhotoAsset> onOpen;
 
@@ -1006,13 +1183,18 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
           },
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onDoubleTapDown: (details) {
+            onTapUp: (details) {
               final index = _indexAt(details.localPosition, columns);
               if (index != null) {
-                widget.onOpen(widget.photos[index]);
+                final photo = widget.photos[index];
+                if (widget.selectionMode) {
+                  widget.onSelect(photo);
+                } else {
+                  widget.onOpen(photo);
+                }
               }
             },
-            onTapUp: (details) {
+            onLongPressStart: (details) {
               final index = _indexAt(details.localPosition, columns);
               if (index != null) {
                 widget.onSelect(widget.photos[index]);
@@ -1048,7 +1230,7 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
                       key: ValueKey(widget.photos[index].path),
                       photo: widget.photos[index],
                       selected:
-                          widget.selected?.path == widget.photos[index].path,
+                          widget.selectedPaths.contains(widget.photos[index].path),
                       rect: _rectFor(index, columns),
                       tile: _tile,
                       offset: _offset,
@@ -1571,10 +1753,19 @@ class _MapBackgroundPainter extends CustomPainter {
 }
 
 class _TimelineView extends StatelessWidget {
-  const _TimelineView(
-      {required this.photos, required this.onSelect, required this.onOpen});
+  const _TimelineView({
+    required this.photos,
+    required this.selected,
+    required this.selectedPaths,
+    required this.selectionMode,
+    required this.onSelect,
+    required this.onOpen,
+  });
 
   final List<PhotoAsset> photos;
+  final PhotoAsset? selected;
+  final Set<String> selectedPaths;
+  final bool selectionMode;
   final ValueChanged<PhotoAsset> onSelect;
   final ValueChanged<PhotoAsset> onOpen;
 
@@ -1604,10 +1795,16 @@ class _TimelineView extends StatelessWidget {
                 final photo = entry.value[index];
                 return _PhotoTile(
                   photo: photo,
-                  selected: false,
+                  selected: selectedPaths.contains(photo.path),
                   compact: true,
-                  onTap: () => onSelect(photo),
-                  onDoubleTap: () => onOpen(photo),
+                  onTap: () {
+                    if (selectionMode) {
+                      onSelect(photo);
+                    } else {
+                      onOpen(photo);
+                    }
+                  },
+                  onLongPress: () => onSelect(photo),
                 );
               },
             ),
@@ -1619,10 +1816,19 @@ class _TimelineView extends StatelessWidget {
 }
 
 class _AlbumsView extends StatelessWidget {
-  const _AlbumsView(
-      {required this.albums, required this.onSelect, required this.onOpen});
+  const _AlbumsView({
+    required this.albums,
+    required this.selected,
+    required this.selectedPaths,
+    required this.selectionMode,
+    required this.onSelect,
+    required this.onOpen,
+  });
 
   final Map<String, List<PhotoAsset>> albums;
+  final PhotoAsset? selected;
+  final Set<String> selectedPaths;
+  final bool selectionMode;
   final ValueChanged<PhotoAsset> onSelect;
   final ValueChanged<PhotoAsset> onOpen;
 
@@ -1653,9 +1859,15 @@ class _AlbumsView extends StatelessWidget {
                         width: 180,
                         child: _PhotoTile(
                           photo: photo,
-                          selected: false,
-                          onTap: () => onSelect(photo),
-                          onDoubleTap: () => onOpen(photo),
+                          selected: selectedPaths.contains(photo.path),
+                          onTap: () {
+                            if (selectionMode) {
+                              onSelect(photo);
+                            } else {
+                              onOpen(photo);
+                            }
+                          },
+                          onLongPress: () => onSelect(photo),
                         ),
                       );
                     },
@@ -1674,7 +1886,7 @@ class _PhotoTile extends StatelessWidget {
     required this.photo,
     required this.selected,
     required this.onTap,
-    required this.onDoubleTap,
+    required this.onLongPress,
     this.compact = false,
   });
 
@@ -1682,13 +1894,13 @@ class _PhotoTile extends StatelessWidget {
   final bool selected;
   final bool compact;
   final VoidCallback onTap;
-  final VoidCallback onDoubleTap;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: onTap,
-      onDoubleTap: onDoubleTap,
+      onLongPress: onLongPress,
       child: AnimatedScale(
         duration: const Duration(milliseconds: 160),
         scale: selected ? 0.97 : 1,
@@ -1716,12 +1928,22 @@ class _PhotoTile extends StatelessWidget {
                 Hero(
                     tag: photo.path,
                     child: _GpuFriendlyImage(path: photo.path)),
+                if (selected)
+                  ColoredBox(
+                      color: Colors.black.withValues(alpha: 0.25)),
                 if (!compact)
                   Positioned(
                       left: 0,
                       right: 0,
                       bottom: 0,
                       child: _TileLabel(photo: photo)),
+                if (selected)
+                  const Positioned(
+                    left: 6,
+                    top: 6,
+                    child: Icon(Icons.check_circle,
+                        color: Colors.white, size: 22),
+                  ),
                 if (photo.favorite)
                   const Positioned(
                       top: 8,
@@ -1862,6 +2084,7 @@ class _TileLabel extends StatelessWidget {
 class _Inspector extends StatelessWidget {
   const _Inspector({
     required this.photo,
+    required this.selectedCount,
     required this.onFavorite,
     required this.onCopy,
     required this.onShare,
@@ -1870,6 +2093,7 @@ class _Inspector extends StatelessWidget {
   });
 
   final PhotoAsset? photo;
+  final int selectedCount;
   final VoidCallback? onFavorite;
   final VoidCallback? onCopy;
   final VoidCallback? onShare;
@@ -1878,6 +2102,25 @@ class _Inspector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (selectedCount > 1) {
+      return DecoratedBox(
+        decoration: BoxDecoration(
+            border: Border(
+                left: BorderSide(color: Theme.of(context).dividerColor))),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.checklist, size: 48,
+                  color: Theme.of(context).colorScheme.primary),
+              const SizedBox(height: 12),
+              Text('$selectedCount photos selected',
+                  style: Theme.of(context).textTheme.titleMedium),
+            ],
+          ),
+        ),
+      );
+    }
     final p = photo;
     return DecoratedBox(
       decoration: BoxDecoration(
