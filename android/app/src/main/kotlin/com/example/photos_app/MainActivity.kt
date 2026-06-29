@@ -1,7 +1,14 @@
 package com.example.photos_app
 
 import android.Manifest
+import android.app.RecoverableSecurityException
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ContentUris
+import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -19,7 +26,9 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private val channelName = "photos_app/android_photos"
     private val permissionRequestCode = 4207
+    private val deleteRequestCode = 4208
     private var pendingPermissionResult: MethodChannel.Result? = null
+    private var pendingDeleteResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -51,6 +60,41 @@ class MainActivity : FlutterActivity() {
                         result.error("missing_uri", "Missing image URI.", null)
                     } else {
                         getThumbnailPath(uri, size, result)
+                    }
+                }
+                "sharePhoto" -> {
+                    val uri = call.argument<String>("uri")
+                    val name = call.argument<String>("name") ?: "Photo"
+                    if (uri.isNullOrBlank()) {
+                        result.error("missing_uri", "Missing image URI.", null)
+                    } else {
+                        sharePhoto(uri, name, result)
+                    }
+                }
+                "copyPhoto" -> {
+                    val uri = call.argument<String>("uri")
+                    val name = call.argument<String>("name") ?: "Photo"
+                    if (uri.isNullOrBlank()) {
+                        result.error("missing_uri", "Missing image URI.", null)
+                    } else {
+                        copyPhoto(uri, name, result)
+                    }
+                }
+                "renamePhoto" -> {
+                    val uri = call.argument<String>("uri")
+                    val name = call.argument<String>("name")
+                    if (uri.isNullOrBlank() || name.isNullOrBlank()) {
+                        result.error("missing_args", "Missing image URI or name.", null)
+                    } else {
+                        renamePhoto(uri, name, result)
+                    }
+                }
+                "deletePhoto" -> {
+                    val uri = call.argument<String>("uri")
+                    if (uri.isNullOrBlank()) {
+                        result.error("missing_uri", "Missing image URI.", null)
+                    } else {
+                        deletePhoto(uri, result)
                     }
                 }
                 else -> result.notImplemented()
@@ -225,6 +269,102 @@ class MainActivity : FlutterActivity() {
         return File(File(cacheDir, "photo_thumbs"), name)
     }
 
+    private fun sharePhoto(uriString: String, name: String, result: MethodChannel.Result) {
+        try {
+            val uri = Uri.parse(uriString)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "image/*"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_TITLE, name)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, name))
+            result.success(null)
+        } catch (error: Exception) {
+            result.error("share_failed", error.message, null)
+        }
+    }
+
+    private fun copyPhoto(uriString: String, name: String, result: MethodChannel.Result) {
+        try {
+            val uri = Uri.parse(uriString)
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newUri(contentResolver, name, uri))
+            result.success(null)
+        } catch (error: Exception) {
+            result.error("copy_failed", error.message, null)
+        }
+    }
+
+    private fun renamePhoto(uriString: String, name: String, result: MethodChannel.Result) {
+        try {
+            val uri = Uri.parse(uriString)
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            }
+            contentResolver.update(uri, values, null, null)
+            result.success(mapOf("path" to uriString, "name" to name))
+        } catch (error: Exception) {
+            result.error("rename_failed", error.message, null)
+        }
+    }
+
+    private fun deletePhoto(uriString: String, result: MethodChannel.Result) {
+        val uri = Uri.parse(uriString)
+        try {
+            val deleted = contentResolver.delete(uri, null, null)
+            if (deleted > 0) {
+                result.success(null)
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                requestDelete(uri, result)
+            } else {
+                result.error("delete_failed", "Media item was not deleted.", null)
+            }
+        } catch (error: RecoverableSecurityException) {
+            pendingDeleteResult = result
+            try {
+                startIntentSenderForResult(
+                    error.userAction.actionIntent.intentSender,
+                    deleteRequestCode,
+                    null,
+                    0,
+                    0,
+                    0
+                )
+            } catch (sendError: IntentSender.SendIntentException) {
+                pendingDeleteResult = null
+                result.error("delete_failed", sendError.message, null)
+            }
+        } catch (error: SecurityException) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                requestDelete(uri, result)
+            } else {
+                result.error("delete_failed", error.message, null)
+            }
+        } catch (error: Exception) {
+            result.error("delete_failed", error.message, null)
+        }
+    }
+
+    private fun requestDelete(uri: Uri, result: MethodChannel.Result) {
+        if (pendingDeleteResult != null) {
+            result.error("delete_pending", "Delete request is already pending.", null)
+            return
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            result.error("delete_failed", "Delete confirmation is not available.", null)
+            return
+        }
+        pendingDeleteResult = result
+        try {
+            val intent = MediaStore.createDeleteRequest(contentResolver, listOf(uri))
+            startIntentSenderForResult(intent.intentSender, deleteRequestCode, null, 0, 0, 0)
+        } catch (error: Exception) {
+            pendingDeleteResult = null
+            result.error("delete_failed", error.message, null)
+        }
+    }
+
     private fun decodeSampledBitmap(uri: Uri, requestedSize: Int): Bitmap? {
         val bounds = BitmapFactory.Options().apply {
             inJustDecodeBounds = true
@@ -279,6 +419,20 @@ class MainActivity : FlutterActivity() {
             result.success(queryImages())
         } else {
             result.error("permission_denied", "Photo permission was denied.", null)
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != deleteRequestCode) return
+
+        val result = pendingDeleteResult ?: return
+        pendingDeleteResult = null
+
+        if (resultCode == RESULT_OK) {
+            result.success(null)
+        } else {
+            result.error("delete_cancelled", "Delete was cancelled.", null)
         }
     }
 }

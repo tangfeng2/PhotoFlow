@@ -86,6 +86,22 @@ class PhotoAsset {
     );
   }
 
+  PhotoAsset renamed({required String path, required String name}) {
+    final ext =
+        name.contains('.') ? name.split('.').last.toLowerCase() : extension;
+    return PhotoAsset(
+      path: path,
+      name: name,
+      modifiedAt: modifiedAt,
+      sizeBytes: sizeBytes,
+      extension: ext,
+      width: width,
+      height: height,
+      albumName: albumName,
+      favorite: favorite,
+    );
+  }
+
   factory PhotoAsset.fromJson(Map<String, dynamic> json) {
     final path = json['path'] as String;
     return PhotoAsset(
@@ -226,6 +242,66 @@ class AndroidImageCache {
     while (cache.length > maxItems) {
       cache.remove(cache.keys.first);
     }
+  }
+}
+
+class PhotoActions {
+  PhotoActions._();
+
+  static Future<void> copyReference(PhotoAsset photo) async {
+    if (Platform.isAndroid && photo.path.startsWith('content://')) {
+      await AndroidPhotoBridge._channel.invokeMethod<void>(
+        'copyPhoto',
+        {'uri': photo.path, 'name': photo.name},
+      );
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: photo.path));
+  }
+
+  static Future<void> share(PhotoAsset photo) async {
+    if (Platform.isAndroid && photo.path.startsWith('content://')) {
+      await AndroidPhotoBridge._channel.invokeMethod<void>(
+        'sharePhoto',
+        {'uri': photo.path, 'name': photo.name},
+      );
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: photo.path));
+  }
+
+  static Future<PhotoAsset> rename(PhotoAsset photo, String newName) async {
+    final cleanName = newName.trim();
+    if (cleanName.isEmpty || cleanName == photo.name) return photo;
+
+    if (Platform.isAndroid && photo.path.startsWith('content://')) {
+      final data =
+          await AndroidPhotoBridge._channel.invokeMapMethod<String, dynamic>(
+        'renamePhoto',
+        {'uri': photo.path, 'name': cleanName},
+      );
+      return photo.renamed(
+        path: data?['path'] as String? ?? photo.path,
+        name: data?['name'] as String? ?? cleanName,
+      );
+    }
+
+    final file = File(photo.path);
+    final renamed =
+        File('${file.parent.path}${Platform.pathSeparator}$cleanName');
+    await file.rename(renamed.path);
+    return photo.renamed(path: renamed.path, name: cleanName);
+  }
+
+  static Future<void> delete(PhotoAsset photo) async {
+    if (Platform.isAndroid && photo.path.startsWith('content://')) {
+      await AndroidPhotoBridge._channel.invokeMethod<void>(
+        'deletePhoto',
+        {'uri': photo.path},
+      );
+      return;
+    }
+    await File(photo.path).delete();
   }
 }
 
@@ -406,6 +482,110 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
     });
   }
 
+  Future<void> _copyPhoto(PhotoAsset photo) async {
+    await PhotoActions.copyReference(photo);
+    _showSnack('Copied reference');
+  }
+
+  Future<void> _sharePhoto(PhotoAsset photo) async {
+    try {
+      await PhotoActions.share(photo);
+    } catch (error) {
+      _showSnack('Share failed: $error');
+    }
+  }
+
+  Future<PhotoAsset?> _renamePhoto(PhotoAsset photo) async {
+    final controller = TextEditingController(text: photo.name);
+    final nextName = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rename photo'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'File name'),
+          onSubmitted: (value) => Navigator.of(context).pop(value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(controller.text),
+            child: const Text('Rename'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (nextName == null || nextName.trim().isEmpty) return null;
+
+    try {
+      final renamed = await PhotoActions.rename(photo, nextName);
+      setState(() {
+        _photos = [
+          for (final item in _photos)
+            if (item.path == photo.path) renamed else item,
+        ];
+        if (_selected?.path == photo.path) _selected = renamed;
+      });
+      _showSnack('Renamed');
+      return renamed;
+    } catch (error) {
+      _showSnack('Rename failed: $error');
+      return null;
+    }
+  }
+
+  Future<bool> _deletePhoto(PhotoAsset photo) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete photo?'),
+        content: Text(photo.name),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return false;
+
+    try {
+      await PhotoActions.delete(photo);
+      setState(() {
+        _photos = [
+          for (final item in _photos)
+            if (item.path != photo.path) item
+        ];
+        _selected = _photos.firstOrNull;
+      });
+      _showSnack('Deleted');
+      return true;
+    } catch (error) {
+      _showSnack('Delete failed: $error');
+      return false;
+    }
+  }
+
+  void _showSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= 980;
@@ -415,7 +595,7 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
           children: [
             if (wide)
               SizedBox(
-                width: 250,
+                width: 218,
                 child: _Sidebar(
                   section: _section,
                   total: _photos.length,
@@ -451,6 +631,14 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
                   onFavorite: _selected == null
                       ? null
                       : () => _toggleFavorite(_selected!),
+                  onCopy:
+                      _selected == null ? null : () => _copyPhoto(_selected!),
+                  onShare:
+                      _selected == null ? null : () => _sharePhoto(_selected!),
+                  onRename:
+                      _selected == null ? null : () => _renamePhoto(_selected!),
+                  onDelete:
+                      _selected == null ? null : () => _deletePhoto(_selected!),
                 ),
               ),
           ],
@@ -498,6 +686,10 @@ class _PhotosHomePageState extends State<PhotosHomePage> {
         photos: _visiblePhotos,
         initial: photo,
         onFavorite: _toggleFavorite,
+        onCopy: _copyPhoto,
+        onShare: _sharePhoto,
+        onRename: _renamePhoto,
+        onDelete: _deletePhoto,
       ),
     ));
   }
@@ -609,31 +801,77 @@ class _Sidebar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return NavigationRail(
-      extended: true,
-      selectedIndex: section.index,
-      onDestinationSelected: (index) => onChanged(LibrarySection.values[index]),
-      destinations: [
-        NavigationRailDestination(
-          icon: const Icon(Icons.photo_library_outlined),
-          selectedIcon: const Icon(Icons.photo_library),
-          label: Text('Library  $total'),
+    final labelStyle = Theme.of(context).textTheme.labelMedium?.copyWith(
+          fontSize: 12,
+          height: 1,
+          fontWeight: FontWeight.w600,
+        );
+    return DefaultTextStyle.merge(
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: labelStyle,
+      child: NavigationRail(
+        extended: true,
+        minExtendedWidth: 218,
+        minWidth: 72,
+        groupAlignment: -0.9,
+        selectedIndex: section.index,
+        onDestinationSelected: (index) =>
+            onChanged(LibrarySection.values[index]),
+        destinations: [
+          NavigationRailDestination(
+            icon: const Icon(Icons.photo_library_outlined, size: 21),
+            selectedIcon: const Icon(Icons.photo_library, size: 21),
+            label: _RailLabel(text: 'Library', count: total),
+          ),
+          const NavigationRailDestination(
+            icon: Icon(Icons.calendar_month_outlined, size: 21),
+            selectedIcon: Icon(Icons.calendar_month, size: 21),
+            label: _RailLabel(text: 'Timeline'),
+          ),
+          NavigationRailDestination(
+            icon: const Icon(Icons.photo_album_outlined, size: 21),
+            selectedIcon: const Icon(Icons.photo_album, size: 21),
+            label: _RailLabel(text: 'Albums', count: albums),
+          ),
+          NavigationRailDestination(
+            icon: const Icon(Icons.favorite_border, size: 21),
+            selectedIcon: const Icon(Icons.favorite, size: 21),
+            label: _RailLabel(text: 'Favorites', count: favorites),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RailLabel extends StatelessWidget {
+  const _RailLabel({required this.text, this.count});
+
+  final String text;
+  final int? count;
+
+  @override
+  Widget build(BuildContext context) {
+    final count = this.count;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Flexible(
+          child: Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
         ),
-        const NavigationRailDestination(
-          icon: Icon(Icons.calendar_month_outlined),
-          selectedIcon: Icon(Icons.calendar_month),
-          label: Text('Timeline'),
-        ),
-        NavigationRailDestination(
-          icon: const Icon(Icons.photo_album_outlined),
-          selectedIcon: const Icon(Icons.photo_album),
-          label: Text('Albums  $albums'),
-        ),
-        NavigationRailDestination(
-          icon: const Icon(Icons.favorite_border),
-          selectedIcon: const Icon(Icons.favorite),
-          label: Text('Favorites  $favorites'),
-        ),
+        if (count != null) ...[
+          const SizedBox(width: 6),
+          Text(
+            _compactCount(count),
+            maxLines: 1,
+            style: TextStyle(color: Theme.of(context).hintColor, fontSize: 11),
+          ),
+        ],
       ],
     );
   }
@@ -648,16 +886,32 @@ class _CompactTabs extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: SegmentedButton<LibrarySection>(
-        segments: const [
-          ButtonSegment(value: LibrarySection.library, label: Text('Library')),
-          ButtonSegment(value: LibrarySection.timeline, label: Text('Days')),
-          ButtonSegment(value: LibrarySection.albums, label: Text('Albums')),
-          ButtonSegment(value: LibrarySection.favorites, label: Text('Favs')),
-        ],
-        selected: {section},
-        onSelectionChanged: (value) => onChanged(value.first),
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+      child: Theme(
+        data: Theme.of(context).copyWith(
+          textTheme: Theme.of(context).textTheme.copyWith(
+                labelLarge: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      fontSize: 11,
+                      height: 1,
+                    ),
+              ),
+        ),
+        child: SegmentedButton<LibrarySection>(
+          style: const ButtonStyle(
+            visualDensity: VisualDensity(horizontal: -3, vertical: -3),
+            padding: WidgetStatePropertyAll(
+              EdgeInsets.symmetric(horizontal: 7, vertical: 6),
+            ),
+          ),
+          segments: const [
+            ButtonSegment(value: LibrarySection.library, label: Text('Lib')),
+            ButtonSegment(value: LibrarySection.timeline, label: Text('Days')),
+            ButtonSegment(value: LibrarySection.albums, label: Text('Albums')),
+            ButtonSegment(value: LibrarySection.favorites, label: Text('Favs')),
+          ],
+          selected: {section},
+          onSelectionChanged: (value) => onChanged(value.first),
+        ),
       ),
     );
   }
@@ -705,22 +959,23 @@ class _ZoomablePhotoMap extends StatefulWidget {
 }
 
 class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
-  static const _minTile = 10.0;
+  static const _minTile = 8.0;
   static const _maxTile = 420.0;
-  static const _initialTile = 96.0;
 
-  Offset _offset = const Offset(20, 20);
-  double _tile = _initialTile;
+  Offset _offset = Offset.zero;
+  double _tile = 0;
   late Offset _startOffset;
   late double _startTile;
   late Offset _startFocal;
+  int _lastPhotoCount = 0;
+  Size _lastViewport = Size.zero;
 
   @override
   void didUpdateWidget(covariant _ZoomablePhotoMap oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.photos.length != widget.photos.length) {
-      _offset = const Offset(20, 20);
-      _tile = _initialTile;
+      _tile = 0;
+      _offset = Offset.zero;
     }
   }
 
@@ -729,8 +984,11 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
-        final columns =
-            _columnsFor(widget.photos.length, size.aspectRatio, _tile);
+        _ensureViewportLayout(size);
+        if (_tile <= 0 || !_tile.isFinite || widget.photos.isEmpty) {
+          return const SizedBox.expand();
+        }
+        final columns = _columnsFor(widget.photos.length, size, _tile);
         final visible = _visibleIndexes(
           count: widget.photos.length,
           columns: columns,
@@ -766,15 +1024,15 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
               _startFocal = details.localFocalPoint;
             },
             onScaleUpdate: (details) {
-              final nextTile =
-                  (_startTile * details.scale).clamp(_minTile, _maxTile);
+              if (_startTile <= 0 || !_startTile.isFinite) return;
+              final nextTile = _clampTile(_startTile * details.scale, size);
               final worldAtStart = (_startFocal - _startOffset) / _startTile;
               final nextOffset = details.localFocalPoint -
                   worldAtStart * nextTile +
                   details.localFocalPoint -
                   _startFocal;
               final nextColumns =
-                  _columnsFor(widget.photos.length, size.aspectRatio, nextTile);
+                  _columnsFor(widget.photos.length, size, nextTile);
               final nextRows = (widget.photos.length / nextColumns).ceil();
               setState(() {
                 _tile = nextTile;
@@ -803,8 +1061,15 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
                       visible: visible.length,
                       tile: _tile,
                       onReset: () => setState(() {
-                        _tile = _initialTile;
-                        _offset = const Offset(20, 20);
+                        _tile = _fitTileFor(widget.photos.length, size);
+                        final resetColumns =
+                            _columnsFor(widget.photos.length, size, _tile);
+                        final resetRows =
+                            (widget.photos.length / resetColumns).ceil();
+                        _offset = _fitOffset(
+                          size,
+                          Size(resetColumns * _tile, resetRows * _tile),
+                        );
                       }),
                     ),
                   ),
@@ -818,10 +1083,10 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
   }
 
   void _zoomAt(Offset focal, double factor, Size viewport) {
-    final nextTile = (_tile * factor).clamp(_minTile, _maxTile);
+    if (_tile <= 0 || !_tile.isFinite) return;
+    final nextTile = _clampTile(_tile * factor, viewport);
     final world = (focal - _offset) / _tile;
-    final nextColumns =
-        _columnsFor(widget.photos.length, viewport.aspectRatio, nextTile);
+    final nextColumns = _columnsFor(widget.photos.length, viewport, nextTile);
     final nextRows = (widget.photos.length / nextColumns).ceil();
     final nextContent = Size(nextColumns * nextTile, nextRows * nextTile);
     setState(() {
@@ -831,6 +1096,7 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
   }
 
   int? _indexAt(Offset localPosition, int columns) {
+    if (_tile <= 0 || !_tile.isFinite) return null;
     final world = localPosition - _offset;
     if (world.dx < 0 || world.dy < 0) return null;
     final column = world.dx ~/ _tile;
@@ -854,6 +1120,9 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
     required Offset offset,
     required double tile,
   }) {
+    if (count <= 0 || columns <= 0 || tile <= 0 || !tile.isFinite) {
+      return const [];
+    }
     final startColumn = math.max(0, ((-offset.dx) / tile).floor() - 2);
     final endColumn =
         math.min(columns - 1, ((viewport.width - offset.dx) / tile).ceil() + 2);
@@ -870,26 +1139,72 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
     return indexes;
   }
 
-  int _columnsFor(int count, double aspectRatio, double tile) {
+  void _ensureViewportLayout(Size viewport) {
+    if (widget.photos.isEmpty || viewport.width <= 0 || viewport.height <= 0) {
+      return;
+    }
+    final viewportChanged = _lastViewport != viewport;
+    final countChanged = _lastPhotoCount != widget.photos.length;
+    if (_tile <= 0 || viewportChanged || countChanged) {
+      final previousTile = _tile;
+      _tile = previousTile <= 0
+          ? _fitTileFor(widget.photos.length, viewport)
+          : _clampTile(previousTile, viewport);
+      final columns = _columnsFor(widget.photos.length, viewport, _tile);
+      final rows = (widget.photos.length / columns).ceil();
+      _offset = _clampOffset(
+        countChanged
+            ? _fitOffset(viewport, Size(columns * _tile, rows * _tile))
+            : _offset,
+        viewport,
+        Size(columns * _tile, rows * _tile),
+      );
+      _lastViewport = viewport;
+      _lastPhotoCount = widget.photos.length;
+    }
+  }
+
+  int _columnsFor(int count, Size viewport, double tile) {
     if (count <= 0) return 1;
-    final base = math.sqrt(count * math.max(0.65, aspectRatio));
-    final startColumns = math.max(1, base.ceil());
-    final zoomProgress =
-        ((tile - _initialTile) / (_maxTile - _initialTile)).clamp(0.0, 1.0);
-    final maxZoomColumns = aspectRatio < 1 ? 1 : count;
-    if (zoomProgress >= 0.98) return maxZoomColumns;
-    final stripProgress = math.pow(zoomProgress, 4).toDouble();
-    final columns = startColumns +
-        ((maxZoomColumns - startColumns) * stripProgress).round();
-    return columns.clamp(1, count);
+    if (tile <= 0 || !tile.isFinite) return 1;
+    final usableWidth = math.max(1.0, viewport.width);
+    return (usableWidth / tile).floor().clamp(1, count);
+  }
+
+  double _fitTileFor(int count, Size viewport) {
+    if (count <= 0 || viewport.width <= 0 || viewport.height <= 0) {
+      return 96;
+    }
+    var bestTile = _minTile;
+    for (var columns = 1; columns <= count; columns++) {
+      final rows = (count / columns).ceil();
+      final tile = math.min(viewport.width / columns, viewport.height / rows);
+      if (tile > bestTile) bestTile = tile;
+    }
+    return bestTile.clamp(_minTile, math.min(_maxTile, viewport.width));
+  }
+
+  double _clampTile(double tile, Size viewport) {
+    final minTile = _fitTileFor(widget.photos.length, viewport);
+    final maxTile = math.min(_maxTile, math.max(_minTile, viewport.width));
+    return tile.clamp(minTile, maxTile).toDouble();
+  }
+
+  Offset _fitOffset(Size viewport, Size content) {
+    return Offset(
+      math.max(0, (viewport.width - content.width) / 2),
+      math.max(0, (viewport.height - content.height) / 2),
+    );
   }
 
   Offset _clampOffset(Offset offset, Size viewport, Size content) {
-    final minX = math.min(20.0, viewport.width - content.width - 20);
-    final minY = math.min(20.0, viewport.height - content.height - 20);
-    final maxX = 20.0;
-    final maxY = 20.0;
-    return Offset(offset.dx.clamp(minX, maxX), offset.dy.clamp(minY, maxY));
+    final dx = content.width <= viewport.width
+        ? (viewport.width - content.width) / 2
+        : offset.dx.clamp(viewport.width - content.width, 0.0).toDouble();
+    final dy = content.height <= viewport.height
+        ? (viewport.height - content.height) / 2
+        : offset.dy.clamp(viewport.height - content.height, 0.0).toDouble();
+    return Offset(dx, dy);
   }
 }
 
@@ -1545,10 +1860,21 @@ class _TileLabel extends StatelessWidget {
 }
 
 class _Inspector extends StatelessWidget {
-  const _Inspector({required this.photo, required this.onFavorite});
+  const _Inspector({
+    required this.photo,
+    required this.onFavorite,
+    required this.onCopy,
+    required this.onShare,
+    required this.onRename,
+    required this.onDelete,
+  });
 
   final PhotoAsset? photo;
   final VoidCallback? onFavorite;
+  final VoidCallback? onCopy;
+  final VoidCallback? onShare;
+  final VoidCallback? onRename;
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -1597,6 +1923,36 @@ class _Inspector extends StatelessWidget {
                   _MetaRow(
                       label: 'Resolution', value: '${p.width} × ${p.height}'),
                 const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: onCopy,
+                      icon: const Icon(Icons.copy, size: 18),
+                      label: const Text('Copy'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: onShare,
+                      icon: const Icon(Icons.ios_share, size: 18),
+                      label: const Text('Share'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: onRename,
+                      icon: const Icon(
+                        Icons.drive_file_rename_outline,
+                        size: 18,
+                      ),
+                      label: const Text('Rename'),
+                    ),
+                    FilledButton.icon(
+                      onPressed: onDelete,
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                      label: const Text('Delete'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
                 SelectableText(p.path,
                     style: Theme.of(context).textTheme.bodySmall),
               ],
@@ -1606,12 +1962,23 @@ class _Inspector extends StatelessWidget {
 }
 
 class _PhotoViewer extends StatefulWidget {
-  const _PhotoViewer(
-      {required this.photos, required this.initial, required this.onFavorite});
+  const _PhotoViewer({
+    required this.photos,
+    required this.initial,
+    required this.onFavorite,
+    required this.onCopy,
+    required this.onShare,
+    required this.onRename,
+    required this.onDelete,
+  });
 
   final List<PhotoAsset> photos;
   final PhotoAsset initial;
   final ValueChanged<PhotoAsset> onFavorite;
+  final ValueChanged<PhotoAsset> onCopy;
+  final ValueChanged<PhotoAsset> onShare;
+  final Future<PhotoAsset?> Function(PhotoAsset) onRename;
+  final Future<bool> Function(PhotoAsset) onDelete;
 
   @override
   State<_PhotoViewer> createState() => _PhotoViewerState();
@@ -1619,8 +1986,9 @@ class _PhotoViewer extends StatefulWidget {
 
 class _PhotoViewerState extends State<_PhotoViewer> {
   late final PageController _controller;
-  late int _index = math.max(
-      0, widget.photos.indexWhere((p) => p.path == widget.initial.path));
+  late List<PhotoAsset> _photos = List.of(widget.photos);
+  late int _index =
+      math.max(0, _photos.indexWhere((p) => p.path == widget.initial.path));
 
   @override
   void initState() {
@@ -1636,7 +2004,7 @@ class _PhotoViewerState extends State<_PhotoViewer> {
 
   @override
   Widget build(BuildContext context) {
-    final photo = widget.photos[_index];
+    final photo = _photos[_index];
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -1645,8 +2013,41 @@ class _PhotoViewerState extends State<_PhotoViewer> {
         title: Text(photo.name, maxLines: 1, overflow: TextOverflow.ellipsis),
         actions: [
           IconButton(
+            tooltip: 'Copy',
+            onPressed: () => widget.onCopy(photo),
+            icon: const Icon(Icons.copy),
+          ),
+          IconButton(
+            tooltip: 'Share',
+            onPressed: () => widget.onShare(photo),
+            icon: const Icon(Icons.ios_share),
+          ),
+          IconButton(
+            tooltip: 'Rename',
+            onPressed: () async {
+              final renamed = await widget.onRename(photo);
+              if (renamed == null || !mounted) return;
+              setState(() {
+                _photos = [
+                  for (final item in _photos)
+                    if (item.path == photo.path) renamed else item,
+                ];
+              });
+            },
+            icon: const Icon(Icons.drive_file_rename_outline),
+          ),
+          IconButton(
             onPressed: () => widget.onFavorite(photo),
             icon: Icon(photo.favorite ? Icons.favorite : Icons.favorite_border),
+          ),
+          IconButton(
+            tooltip: 'Delete',
+            onPressed: () async {
+              final navigator = Navigator.of(context);
+              final deleted = await widget.onDelete(photo);
+              if (deleted && mounted) navigator.pop();
+            },
+            icon: const Icon(Icons.delete_outline),
           ),
         ],
       ),
@@ -1655,10 +2056,10 @@ class _PhotoViewerState extends State<_PhotoViewer> {
           Positioned.fill(
             child: PageView.builder(
               controller: _controller,
-              itemCount: widget.photos.length,
+              itemCount: _photos.length,
               onPageChanged: (index) => setState(() => _index = index),
               itemBuilder: (_, index) {
-                final item = widget.photos[index];
+                final item = _photos[index];
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 86),
                   child: InteractiveViewer(
@@ -1678,13 +2079,13 @@ class _PhotoViewerState extends State<_PhotoViewer> {
               },
             ),
           ),
-          if (widget.photos.length > 1)
+          if (_photos.length > 1)
             Positioned(
               left: 0,
               right: 0,
               bottom: 0,
               child: _ViewerMiniTimeline(
-                photos: widget.photos,
+                photos: _photos,
                 activeIndex: _index,
                 onSelectIndex: _openAt,
               ),
@@ -1788,4 +2189,10 @@ String _formatBytes(int bytes) {
     unit++;
   }
   return '${size.toStringAsFixed(unit == 0 ? 0 : 1)} ${units[unit]}';
+}
+
+String _compactCount(int count) {
+  if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
+  if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
+  return '$count';
 }
