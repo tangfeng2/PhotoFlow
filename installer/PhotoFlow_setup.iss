@@ -5,7 +5,7 @@
 #define MyAppName "PhotoFlow"
 #define MyAppVersion "0.1.0"
 #define MyAppPublisher "com.example"
-#define MyAppURL "https://github.com/example/photos-app"
+#define MyAppURL "https://github.com/tangfeng2/PhotoFlow"
 #define MyBuildDir "..\build\windows\x64\runner\Release"
 
 [Setup]

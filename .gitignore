@@ -11,3 +11,4 @@ rust/Cargo.lock
 *.dll
 *.dylib
 *.so
+*.exe
