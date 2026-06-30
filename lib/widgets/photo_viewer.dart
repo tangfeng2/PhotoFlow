@@ -1,6 +1,4 @@
 import 'dart:math' as math;
-import 'dart:ui' as ui;
-
 import 'package:flutter/material.dart';
 
 import '../models/photo_asset.dart';
@@ -170,8 +168,6 @@ class ViewerMiniTimeline extends StatefulWidget {
 
 class _ViewerMiniTimelineState extends State<ViewerMiniTimeline> {
   static const _itemExtent = 50.0;
-  static const _sideBlurWidth = 48.0;
-
   final _controller = ScrollController();
   double _viewportWidth = 0;
   bool _programmaticScroll = false;
@@ -293,22 +289,6 @@ class _ViewerMiniTimelineState extends State<ViewerMiniTimeline> {
                       },
                     ),
                   ),
-                  const Positioned(
-                    left: 0,
-                    top: 0,
-                    bottom: 0,
-                    width: _sideBlurWidth,
-                    child: TimelineEdgeBlur(
-                        alignment: Alignment.centerLeft),
-                  ),
-                  const Positioned(
-                    right: 0,
-                    top: 0,
-                    bottom: 0,
-                    width: _sideBlurWidth,
-                    child: TimelineEdgeBlur(
-                        alignment: Alignment.centerRight),
-                  ),
                 ],
               ),
             ),
@@ -347,30 +327,4 @@ class _ViewerMiniTimelineState extends State<ViewerMiniTimeline> {
   }
 }
 
-class TimelineEdgeBlur extends StatelessWidget {
-  const TimelineEdgeBlur({super.key, required this.alignment});
 
-  final Alignment alignment;
-
-  @override
-  Widget build(BuildContext context) {
-    final isLeft = alignment == Alignment.centerLeft;
-    return ClipRect(
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 6, sigmaY: 6),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: isLeft ? Alignment.centerLeft : Alignment.centerRight,
-              end: isLeft ? Alignment.centerRight : Alignment.centerLeft,
-              colors: [
-                Colors.black.withValues(alpha: 0.5),
-                Colors.black.withValues(alpha: 0),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
