@@ -1527,7 +1527,7 @@ class _ViewerMiniTimelineState extends State<_ViewerMiniTimeline> {
           child: SizedBox(
             height: 64,
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(18),
+              borderRadius: BorderRadius.circular(4),
               child: Stack(
                 children: [
                   Positioned.fill(
@@ -1608,20 +1608,20 @@ class _ViewerMiniTimelineState extends State<_ViewerMiniTimeline> {
                       },
                     ),
                   ),
-                  const Positioned(
-                    left: 0,
-                    top: 0,
-                    bottom: 0,
-                    width: _sideBlurWidth,
-                    child: _TimelineEdgeBlur(alignment: Alignment.centerLeft),
-                  ),
-                  const Positioned(
-                    right: 0,
-                    top: 0,
-                    bottom: 0,
-                    width: _sideBlurWidth,
-                    child: _TimelineEdgeBlur(alignment: Alignment.centerRight),
-                  ),
+                  // const Positioned(
+                  //   left: 0,
+                  //   top: 0,
+                  //   bottom: 0,
+                  //   width: _sideBlurWidth,
+                  //   child: _TimelineEdgeBlur(alignment: Alignment.centerLeft),
+                  // ),
+                  // const Positioned(
+                  //   right: 0,
+                  //   top: 0,
+                  //   bottom: 0,
+                  //   width: _sideBlurWidth,
+                  //   child: _TimelineEdgeBlur(alignment: Alignment.centerRight),
+                  // ),
                 ],
               ),
             ),
