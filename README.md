@@ -1,4 +1,4 @@
-# Photos App
+# PhotoFlow
 
 Flutter + Rust photo viewer/manager inspired by iOS Photos.
 
@@ -37,6 +37,26 @@ Then:
 
     flutter pub get
     flutter run -d windows
+
+### Android
+
+The app uses a native MethodChannel (`AndroidPhotoBridge`) to scan device photos —
+no Rust FFI needed on Android.
+
+Make sure an Android device is connected (USB debugging enabled) or an emulator is running:
+
+    flutter run -d android
+
+To build a release APK:
+
+    flutter build apk --release
+
+To build an App Bundle for Play Store:
+
+    flutter build appbundle --release
+
+> Note: On Android, the Rust `photos_core` is **not** used. All photo scanning
+> goes through the platform channel to the Kotlin `MainActivity`.
 
 ## Library controls
 
