@@ -897,34 +897,36 @@ class _TopBar extends StatelessWidget {
           const SizedBox(height: 12),
           Row(
             children: [
-              Expanded(
-                flex: 2,
-                child: Platform.isAndroid
-                    ? InputDecorator(
-                        decoration: const InputDecoration(
-                          prefixIcon: Icon(Icons.photo_library_outlined),
-                          border: OutlineInputBorder(),
-                          labelText: 'Source',
-                          isDense: true,
+              if (MediaQuery.sizeOf(context).width >= 600) ...[
+                Expanded(
+                  flex: 2,
+                  child: Platform.isAndroid
+                      ? InputDecorator(
+                          decoration: const InputDecoration(
+                            prefixIcon: Icon(Icons.photo_library_outlined),
+                            border: OutlineInputBorder(),
+                            labelText: 'Source',
+                            isDense: true,
+                          ),
+                          child: Text(
+                            folderController.text,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        )
+                      : TextField(
+                          controller: folderController,
+                          decoration: const InputDecoration(
+                            prefixIcon: Icon(Icons.folder_outlined),
+                            border: OutlineInputBorder(),
+                            labelText: 'Photo folder',
+                            isDense: true,
+                          ),
+                          onSubmitted: (_) => onScan(),
                         ),
-                        child: Text(
-                          folderController.text,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      )
-                    : TextField(
-                        controller: folderController,
-                        decoration: const InputDecoration(
-                          prefixIcon: Icon(Icons.folder_outlined),
-                          border: OutlineInputBorder(),
-                          labelText: 'Photo folder',
-                          isDense: true,
-                        ),
-                        onSubmitted: (_) => onScan(),
-                      ),
-              ),
-              const SizedBox(width: 10),
+                ),
+                const SizedBox(width: 10),
+              ],
               Expanded(
                 child: TextField(
                   controller: searchController,
@@ -1139,13 +1141,19 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
   static const _minTile = 8.0;
   static const _maxTile = 420.0;
 
-  Offset _offset = Offset.zero;
-  double _tile = 0;
+  // ponytail: static cache persists zoom/pan across tab switches
+  static Offset _savedOffset = Offset.zero;
+  static double _savedTile = 0;
+  static int _savedCount = 0;
+  static Size _savedViewport = Size.zero;
+
+  Offset _offset = _savedOffset;
+  double _tile = _savedTile;
   late Offset _startOffset;
   late double _startTile;
   late Offset _startFocal;
-  int _lastPhotoCount = 0;
-  Size _lastViewport = Size.zero;
+  int _lastPhotoCount = _savedCount;
+  Size _lastViewport = _savedViewport;
 
   @override
   void didUpdateWidget(covariant _ZoomablePhotoMap oldWidget) {
@@ -1154,6 +1162,15 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
       _tile = 0;
       _offset = Offset.zero;
     }
+  }
+
+  @override
+  void dispose() {
+    _savedOffset = _offset;
+    _savedTile = _tile;
+    _savedCount = widget.photos.length;
+    _savedViewport = _lastViewport;
+    super.dispose();
   }
 
   @override
@@ -1235,26 +1252,26 @@ class _ZoomablePhotoMapState extends State<_ZoomablePhotoMap> {
                       tile: _tile,
                       offset: _offset,
                     ),
-                  Positioned(
-                    left: 12,
-                    bottom: 12,
-                    child: _ZoomHud(
-                      photos: widget.photos.length,
-                      visible: visible.length,
-                      tile: _tile,
-                      onReset: () => setState(() {
-                        _tile = _fitTileFor(widget.photos.length, size);
-                        final resetColumns =
-                            _columnsFor(widget.photos.length, size, _tile);
-                        final resetRows =
-                            (widget.photos.length / resetColumns).ceil();
-                        _offset = _fitOffset(
-                          size,
-                          Size(resetColumns * _tile, resetRows * _tile),
-                        );
-                      }),
-                    ),
-                  ),
+                  // Positioned(
+                  //   left: 12,
+                  //   bottom: 12,
+                  //   child: _ZoomHud(
+                  //     photos: widget.photos.length,
+                  //     visible: visible.length,
+                  //     tile: _tile,
+                  //     onReset: () => setState(() {
+                  //       _tile = _fitTileFor(widget.photos.length, size);
+                  //       final resetColumns =
+                  //           _columnsFor(widget.photos.length, size, _tile);
+                  //       final resetRows =
+                  //           (widget.photos.length / resetColumns).ceil();
+                  //       _offset = _fitOffset(
+                  //         size,
+                  //         Size(resetColumns * _tile, resetRows * _tile),
+                  //       );
+                  //     }),
+                  //   ),
+                  // ),
                 ],
               ),
             ),
