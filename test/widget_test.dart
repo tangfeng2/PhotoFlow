@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:photos_app/main.dart';
+import 'package:photo_flow/main.dart';
 
 void main() {
   testWidgets('Photos app renders shell', (tester) async {

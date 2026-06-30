@@ -1,4 +1,4 @@
-package com.example.photos_app
+package com.example.photo_flow
 
 import android.Manifest
 import android.app.RecoverableSecurityException
@@ -24,7 +24,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
-    private val channelName = "photos_app/android_photos"
+    private val channelName = "photo_flow/android_photos"
     private val permissionRequestCode = 4207
     private val deleteRequestCode = 4208
     private var pendingPermissionResult: MethodChannel.Result? = null

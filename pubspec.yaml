@@ -1,4 +1,4 @@
-name: photos_app
+name: photo_flow
 description: A professional Flutter + Rust photo viewer and manager inspired by iOS Photos.
 publish_to: "none"
 version: 0.1.0+1

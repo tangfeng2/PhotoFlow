@@ -121,7 +121,7 @@ class PhotoAsset {
 class AndroidPhotoBridge {
   AndroidPhotoBridge._();
 
-  static const _channel = MethodChannel('photos_app/android_photos');
+  static const _channel = MethodChannel('photo_flow/android_photos');
 
   static Future<List<PhotoAsset>> scanPhotos() async {
     final data = await _channel.invokeListMethod<Map<dynamic, dynamic>>(
